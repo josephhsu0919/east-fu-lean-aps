@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import copy
 from pathlib import Path
 
+from openpyxl.styles import PatternFill
 import pandas as pd
 
 
@@ -24,7 +25,7 @@ def demo_orders() -> pd.DataFrame:
             ["UAT-260903-009", "SIM-MULTI-C", 300, "PCS", "一般", "2026-09-04", "C2,C5"],
             ["UAT-260903-010", "SIM-C2-C", 840, "PCS", "低優先", "2026-09-05", ""],
         ],
-        columns=["工單編號", "產品", "數量", "單位", "優先級", "交期", "允許機台"],
+        columns=["工單編號", "產品", "數量", "單位", "優先級", "交期", "工單限定機台"],
     )
 
 
@@ -109,12 +110,21 @@ def write_demo_excel(path: str | Path) -> Path:
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         for sheet_name, frame in demo_workbook().items():
             frame.to_excel(writer, sheet_name=sheet_name, index=False)
+        required_columns = {
+            "待排工單": {"工單編號", "產品", "數量", "單位", "優先級", "交期"},
+            "產品機台產速": {"產品", "機台", "產速_PCS_per_hr", "換模群組"},
+            "機台初始狀態": {"機台", "初始產品"},
+            "換模時間": {"來源換模群組", "目標換模群組", "換模時間_分鐘"},
+        }
+        required_fill = PatternFill("solid", fgColor="FCE4EC")
+        header_fill = PatternFill("solid", fgColor="E5E7EB")
         for worksheet in writer.book.worksheets:
             worksheet.freeze_panes = "A2"
             for cell in worksheet[1]:
                 font = copy(cell.font)
                 font.bold = True
                 cell.font = font
+                cell.fill = required_fill if cell.value in required_columns.get(worksheet.title, set()) else header_fill
             for column_cells in worksheet.columns:
                 values = [str(cell.value) if cell.value is not None else "" for cell in column_cells]
                 width = min(max(max(len(value) for value in values) + 2, 12), 24)

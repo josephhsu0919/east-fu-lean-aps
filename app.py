@@ -59,6 +59,9 @@ def init_state() -> None:
         "custom_start": default_start,
         "custom_end": default_start + pd.Timedelta(hours=24),
         "changeover_minutes": 30,
+        "selected_machines": MACHINES.copy(),
+        "capacity_mode": "正常產能（100%）",
+        "custom_capacity_percent": 100,
         "unavailability": pd.DataFrame(columns=["機台", "不可用開始", "不可用結束", "原因"]),
         "work_time_mode": "24 小時連續排程",
         "workday_start_time": time(8, 0),
@@ -110,6 +113,33 @@ def with_horizon_settings(data: dict[str, pd.DataFrame], start: pd.Timestamp, en
     return copied
 
 
+def capacity_factor() -> float:
+    if st.session_state.capacity_mode == "人力不足（80%）":
+        return 0.8
+    if st.session_state.capacity_mode == "嚴重不足（60%）":
+        return 0.6
+    if st.session_state.capacity_mode == "自訂":
+        return float(st.session_state.custom_capacity_percent) / 100
+    return 1.0
+
+
+def apply_run_constraints(data: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame] | None:
+    selected_machines = [machine for machine in st.session_state.selected_machines if machine in MACHINES]
+    if not selected_machines:
+        st.error("請至少選擇一台本次排程使用機台。")
+        return None
+    copied = {name: frame.copy() for name, frame in data.items()}
+    rates = copied["產品機台產速"].copy()
+    rates = rates[rates["機台"].astype(str).isin(selected_machines)].copy()
+    if rates.empty:
+        st.error("本次選擇的機台沒有任何產品產速資料，請調整機台選擇或產品機台產速表。")
+        return None
+    factor = capacity_factor()
+    rates["產速_PCS_per_hr"] = pd.to_numeric(rates["產速_PCS_per_hr"], errors="coerce") * factor
+    copied["產品機台產速"] = rates
+    return copied
+
+
 def apply_workbook_defaults(data: dict[str, pd.DataFrame]) -> None:
     start, end, _ = get_schedule_window(data["排程基本設定"])
     if pd.notna(start):
@@ -148,8 +178,9 @@ def datetime_fields(label: str, value: pd.Timestamp, key: str) -> pd.Timestamp:
 
 
 def calendar_unavailability(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    selected_machines = [machine for machine in st.session_state.selected_machines if machine in MACHINES] or MACHINES
     return build_calendar_unavailability(
-        MACHINES,
+        selected_machines,
         start,
         end,
         exclude_weekends=st.session_state.exclude_weekends,
@@ -194,8 +225,8 @@ FAQ_ANSWERS = [
         "平常假設機台都可排。臨時停機、保養、盤點、國定假日可在 `特殊狀況 / 停機` 或 `基本設定` 的不排程日期中輸入，系統會避開那些時段。",
     ),
     (
-        ["8小時", "8 小時", "工時", "24小時", "24 小時", "上班"],
-        "`工時模式` 可選 `24 小時連續排程` 或 `每日 8 小時排程`。每日 8 小時會從你設定的每日開始時間往後排指定工時，其餘時間不排程。",
+        ["8小時", "8 小時", "工時", "24小時", "24 小時", "上班", "人力", "產能"],
+        "`工時模式` 可選 `24 小時連續排程` 或 `每日 8 小時排程`。若人力不足，可在 `今日人力 / 產能狀況` 選 80%、60% 或自訂比例，系統會用折減後產速排程。",
     ),
     (
         ["甘特", "圖", "下載", "匯出"],
@@ -244,6 +275,9 @@ def run_schedule(reason: str = "INITIAL") -> None:
         st.error("排程開始時間必須早於排程結束時間。")
         return
     data = with_horizon_settings(data, start, end)
+    data = apply_run_constraints(data)
+    if data is None:
+        return
     blocked_periods = effective_unavailability(start, end)
     try:
         result = schedule(
@@ -276,6 +310,9 @@ def run_schedule(reason: str = "INITIAL") -> None:
                 "strategy_code": st.session_state.selected_strategy,
                 "horizon_mode": st.session_state.horizon_mode,
                 "default_changeover_minutes": st.session_state.changeover_minutes,
+                "selected_machines": st.session_state.selected_machines,
+                "capacity_mode": st.session_state.capacity_mode,
+                "capacity_factor": capacity_factor(),
                 "work_time_mode": st.session_state.work_time_mode,
                 "workday_start_time": st.session_state.workday_start_time.strftime("%H:%M"),
                 "daily_work_hours": st.session_state.daily_work_hours,
@@ -358,6 +395,7 @@ with controls[0]:
         st.session_state.schedule_start = datetime_fields("排程開始", pd.Timestamp(st.session_state.schedule_start), "schedule_start")
 with controls[1]:
     st.session_state.selected_strategy = st.selectbox("排程策略", MAIN_STRATEGIES, format_func=lambda code: STRATEGIES[code].name)
+    st.session_state.selected_machines = st.multiselect("本次排程使用機台", MACHINES, default=st.session_state.selected_machines)
 
 quick = st.columns(2)
 with quick[0]:
@@ -373,7 +411,8 @@ with quick[0]:
                 st.success("急單重排完成")
 with quick[1]:
     with st.expander("特殊狀況 / 停機"):
-        down_machine = st.selectbox("機台", MACHINES)
+        downtime_machines = st.session_state.selected_machines or MACHINES
+        down_machine = st.selectbox("機台", downtime_machines)
         down_from = datetime_fields("不可用開始", pd.Timestamp(st.session_state.schedule_start) + pd.Timedelta(hours=4), "down_from")
         down_until = datetime_fields("不可用結束", pd.Timestamp(st.session_state.schedule_start) + pd.Timedelta(hours=6), "down_until")
         reason = st.text_input("原因", value="")
@@ -406,10 +445,13 @@ with st.expander("基本設定", expanded=data is not None):
             work_cols = st.columns(2)
             st.session_state.workday_start_time = work_cols[0].time_input("每日開始時間", value=st.session_state.workday_start_time)
             st.session_state.daily_work_hours = work_cols[1].number_input("每日可排工時", min_value=1.0, max_value=24.0, value=float(st.session_state.daily_work_hours), step=0.5)
+        st.session_state.capacity_mode = st.radio("今日人力 / 產能狀況", ["正常產能（100%）", "人力不足（80%）", "嚴重不足（60%）", "自訂"], horizontal=True)
+        if st.session_state.capacity_mode == "自訂":
+            st.session_state.custom_capacity_percent = st.number_input("自訂產能比例（%）", min_value=10, max_value=150, value=int(st.session_state.custom_capacity_percent), step=5)
         st.session_state.changeover_minutes = st.number_input("預設換模時間（分鐘）", min_value=0, value=int(st.session_state.changeover_minutes), step=5)
         st.session_state.exclude_weekends = st.checkbox("週末不排程（星期六、星期日）", value=bool(st.session_state.exclude_weekends))
         st.session_state.non_working_dates = st.text_area("指定日期不排程（國定假日 / 盤點 / 全廠休假）", value=st.session_state.non_working_dates, placeholder="例如：\n2026-09-28\n2026-10-10")
-        st.caption("若待排工單有 `允許機台` 欄位，可填 C5 或 C4,C5；空白代表依產品機台產速表自動選機台。")
+        st.caption("產品原則上可用機台請填在產品機台產速表；單張工單若有特殊限制，可在 `工單限定機台` 填 C5 或 C4,C5。")
         edited_rates = st.data_editor(data["產品機台產速"], use_container_width=True, num_rows="dynamic")
         changeover_source = data.get("換模時間", pd.DataFrame(columns=["來源換模群組", "目標換模群組", "換模時間_分鐘"]))
         edited_changeovers = st.data_editor(changeover_source, use_container_width=True, num_rows="dynamic")

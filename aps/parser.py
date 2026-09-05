@@ -18,7 +18,7 @@ CANONICAL_COLUMNS = {
     "單位": ["單位", "數量單位", "unit"],
     "交期": ["交期", "需求日期", "需求時間", "due date", "due_date"],
     "優先級": ["優先級", "優先順序", "工單急迫程度", "priority"],
-    "允許機台": ["允許機台", "限定機台", "可排機台", "指定機台", "allowed_machines", "eligible_machines"],
+    "允許機台": ["允許機台", "工單限定機台", "本單限用機台", "特殊指定機台", "限定機台", "可排機台", "指定機台", "allowed_machines", "eligible_machines"],
     "換模群組": ["換模群組", "換線群組", "模具群組", "changeover_group", "setup_group"],
     "來源換模群組": ["來源換模群組", "前一換模群組", "from_group", "source_group"],
     "目標換模群組": ["目標換模群組", "下一換模群組", "to_group", "target_group"],
