@@ -149,7 +149,7 @@ def test_same_product_changeover_is_zero_and_initial_setup_affects_first_job():
     assert first_c2["產品"] == "SIM-C2-A"
     assert first_c2["換模時間（小時）"] == 0
 
-    data["機台初始狀態"].loc[data["機台初始狀態"]["機台"] == "C2", "初始產品"] = "SIM-C2-B"
+    data["機台初始狀態"] = pd.DataFrame([{"機台": "C2", "初始產品": "SIM-C2-B"}])
     changed = schedule(data, "rush_edd", default_changeover_minutes=30)
     first_c2_changed = changed[changed["指派機台"] == "C2"].sort_values("開始時間").iloc[0]
     assert first_c2_changed["換模時間（小時）"] == 0.4167

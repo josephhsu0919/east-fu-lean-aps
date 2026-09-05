@@ -73,10 +73,7 @@ def demo_settings() -> pd.DataFrame:
 
 
 def demo_initial_state() -> pd.DataFrame:
-    return pd.DataFrame(
-        [["C2", "SIM-C2-A"], ["C4", "SIM-C4-A"], ["C5", "SIM-C5-A"]],
-        columns=["機台", "初始產品"],
-    )
+    return pd.DataFrame(columns=["機台", "初始產品"])
 
 
 def demo_changeovers() -> pd.DataFrame:
@@ -117,7 +114,7 @@ def write_demo_excel(path: str | Path) -> Path:
         required_columns = {
             "待排工單": {"工單編號", "產品", "數量", "單位", "優先級", "交期"},
             "產品機台產速": {"產品", "機台", "產速_PCS_per_hr", "換模群組"},
-            "機台初始狀態": {"機台", "初始產品"},
+            "機台初始狀態": set(),
             "換模時間": {"來源換模群組", "目標換模群組", "換模時間_分鐘"},
             "填表說明": {"必填"},
         }

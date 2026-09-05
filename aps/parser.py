@@ -18,7 +18,22 @@ CANONICAL_COLUMNS = {
     "單位": ["單位", "數量單位", "unit"],
     "交期": ["交期", "需求日期", "需求時間", "due date", "due_date"],
     "優先級": ["優先級", "優先順序", "工單急迫程度", "priority"],
-    "允許機台": ["允許機台", "工單限定機台", "本單限用機台", "特殊指定機台", "限定機台", "可排機台", "指定機台", "allowed_machines", "eligible_machines"],
+    "允許機台": [
+        "允許機台",
+        "工單限定機台",
+        "本單限用機台",
+        "特殊指定機台",
+        "限定機台",
+        "限制機台",
+        "可排機台",
+        "可用機台",
+        "指定機台",
+        "指定可用機台",
+        "只能使用機台",
+        "允許生產機台",
+        "allowed_machines",
+        "eligible_machines",
+    ],
     "換模群組": ["換模群組", "換線群組", "模具群組", "changeover_group", "setup_group"],
     "來源換模群組": ["來源換模群組", "前一換模群組", "from_group", "source_group"],
     "目標換模群組": ["目標換模群組", "下一換模群組", "to_group", "target_group"],
@@ -122,7 +137,10 @@ def normalize_settings_frame(frame: pd.DataFrame) -> pd.DataFrame:
 
 def normalize_due_dates(series: pd.Series) -> pd.Series:
     original = series.copy()
-    parsed = pd.to_datetime(series, errors="coerce")
+    try:
+        parsed = pd.to_datetime(series, errors="coerce", format="mixed")
+    except TypeError:
+        parsed = pd.to_datetime(series, errors="coerce")
 
     def is_date_only(value: object) -> bool:
         if pd.isna(value):

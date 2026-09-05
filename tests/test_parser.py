@@ -31,6 +31,7 @@ def test_demo_excel_has_field_guide_and_required_fill():
     workbook = openpyxl_load_workbook(path)
     assert "填表說明" in workbook.sheetnames
     assert workbook["待排工單"]["A1"].fill.fgColor.rgb == "00FFC7CE"
+    assert workbook["機台初始狀態"]["A1"].fill.fgColor.rgb != "00FFC7CE"
     assert workbook["填表說明"]["C2"].value == "是"
     assert workbook["填表說明"]["C2"].fill.fgColor.rgb == "00FFC7CE"
 
@@ -62,6 +63,20 @@ def test_column_alias_normalization_for_canonical_uat_shape():
     assert data["待排工單"].loc[0, "工單編號"] == "UAT-1"
     assert data["待排工單"].loc[0, "產品"] == "SIM-C2-A"
     assert data["待排工單"].loc[0, "交期"].year == 2026
+
+
+def test_order_machine_limit_aliases_normalize():
+    import pandas as pd
+
+    workbook = {
+        "待排工單": pd.DataFrame(
+            [{"工單編號": "UAT-1", "產品": "SIM-C2-A", "數量": 10, "單位": "PCS", "交期": "2026-09-04", "優先級": "一般", "限制機台": "C2"}]
+        ),
+        "產品機台產速": pd.DataFrame([{"產品": "SIM-C2-A", "機台": "C2", "產速_PCS_per_hr": 120}]),
+    }
+    ok, issues, data = validate_workbook(workbook)
+    assert ok, issues
+    assert data["待排工單"].loc[0, "允許機台"] == "C2"
 
 
 def test_schedule_settings_sheet_is_optional():
