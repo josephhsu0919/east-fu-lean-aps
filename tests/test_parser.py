@@ -19,6 +19,20 @@ def test_demo_excel_can_be_read():
     assert "排程基本設定" not in workbook
     assert "機台可用時間" not in workbook
     assert "排程基本設定" in data
+    assert "填表說明" in workbook
+
+
+def test_demo_excel_has_field_guide_and_required_fill():
+    from openpyxl import load_workbook as openpyxl_load_workbook
+
+    temp_dir = Path("tests/.tmp")
+    temp_dir.mkdir(exist_ok=True)
+    path = write_demo_excel(temp_dir / "demo_with_guide.xlsx")
+    workbook = openpyxl_load_workbook(path)
+    assert "填表說明" in workbook.sheetnames
+    assert workbook["待排工單"]["A1"].fill.fgColor.rgb == "00FFC7CE"
+    assert workbook["填表說明"]["C2"].value == "是"
+    assert workbook["填表說明"]["C2"].fill.fgColor.rgb == "00FFC7CE"
 
 
 def test_product_machine_rate_mappings_are_correct():

@@ -3,8 +3,11 @@ from __future__ import annotations
 from copy import copy
 from pathlib import Path
 
+from openpyxl.styles import Alignment
 from openpyxl.styles import PatternFill
 import pandas as pd
+
+from .manual import field_guide_frame_rows
 
 
 SCHEDULE_START = pd.Timestamp("2026-09-03 08:00")
@@ -110,14 +113,17 @@ def write_demo_excel(path: str | Path) -> Path:
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         for sheet_name, frame in demo_workbook().items():
             frame.to_excel(writer, sheet_name=sheet_name, index=False)
+        pd.DataFrame(field_guide_frame_rows()[1:], columns=field_guide_frame_rows()[0]).to_excel(writer, sheet_name="填表說明", index=False)
         required_columns = {
             "待排工單": {"工單編號", "產品", "數量", "單位", "優先級", "交期"},
             "產品機台產速": {"產品", "機台", "產速_PCS_per_hr", "換模群組"},
             "機台初始狀態": {"機台", "初始產品"},
             "換模時間": {"來源換模群組", "目標換模群組", "換模時間_分鐘"},
+            "填表說明": {"必填"},
         }
-        required_fill = PatternFill("solid", fgColor="FCE4EC")
+        required_fill = PatternFill("solid", fgColor="FFC7CE")
         header_fill = PatternFill("solid", fgColor="E5E7EB")
+        optional_fill = PatternFill("solid", fgColor="FFFFFF")
         for worksheet in writer.book.worksheets:
             worksheet.freeze_panes = "A2"
             for cell in worksheet[1]:
@@ -125,8 +131,23 @@ def write_demo_excel(path: str | Path) -> Path:
                 font.bold = True
                 cell.font = font
                 cell.fill = required_fill if cell.value in required_columns.get(worksheet.title, set()) else header_fill
+            if worksheet.title == "填表說明":
+                for row in range(2, worksheet.max_row + 1):
+                    required_cell = worksheet.cell(row=row, column=3)
+                    required_cell.fill = required_fill if required_cell.value == "是" else optional_fill
+                for row in worksheet.iter_rows():
+                    for cell in row:
+                        cell.alignment = Alignment(vertical="top", wrap_text=True)
             for column_cells in worksheet.columns:
                 values = [str(cell.value) if cell.value is not None else "" for cell in column_cells]
-                width = min(max(max(len(value) for value in values) + 2, 12), 24)
+                max_width = 60 if worksheet.title == "填表說明" else 24
+                width = min(max(max(len(value) for value in values) + 2, 12), max_width)
                 worksheet.column_dimensions[column_cells[0].column_letter].width = width
+            if worksheet.title == "填表說明":
+                worksheet.column_dimensions["A"].width = 18
+                worksheet.column_dimensions["B"].width = 20
+                worksheet.column_dimensions["C"].width = 10
+                worksheet.column_dimensions["D"].width = 58
+                worksheet.column_dimensions["E"].width = 24
+                worksheet.column_dimensions["F"].width = 48
     return path

@@ -12,6 +12,7 @@ from aps.calendar import build_calendar_unavailability, parse_non_working_dates
 from aps.comparator import compare_strategies, recommend_strategy
 from aps.exporter import export_schedule_excel
 from aps.history import create_schedule_version, load_history, version_orders_frame, version_schedule_frame
+from aps.manual import answer_from_manual, manual_text
 from aps.metrics import calculate_kpis, kpis_to_frame
 from aps.parser import clean_label, get_schedule_window, load_workbook
 from aps.sample_data import write_demo_excel
@@ -207,54 +208,8 @@ def export_schedule_package_zip(excel_bytes: bytes, gantt_html: str) -> bytes:
     return output.getvalue()
 
 
-FAQ_ANSWERS = [
-    (
-        ["excel", "欄位", "資料", "準備", "上傳"],
-        "Excel 至少需要 `待排工單`、`產品機台產速`。待排工單要有工單編號、產品、數量、單位、優先級、交期；產品機台產速要有產品、機台、產速。機台可用時間、排程開始與期間都可以直接在畫面處理。",
-    ),
-    (
-        ["允許機台", "限定機台", "c4", "c5", "指定機台"],
-        "`產品機台產速` 用來定義產品原則上可在哪些機台做；`待排工單` 的 `允許機台` 是單張工單的例外限制，例如 `C4,C5`。",
-    ),
-    (
-        ["換模", "換線", "群組"],
-        "`換模群組` 是產品族群。排程時若前後工單群組不同，會查 `換模時間` 表的來源群組到目標群組分鐘數；查不到才用預設換模時間。",
-    ),
-    (
-        ["停機", "特殊", "週末", "假日", "國定", "不排程", "休假"],
-        "平常假設機台都可排。臨時停機、保養、盤點、國定假日可在 `特殊狀況 / 停機` 或 `基本設定` 的不排程日期中輸入，系統會避開那些時段。",
-    ),
-    (
-        ["8小時", "8 小時", "工時", "24小時", "24 小時", "上班", "人力", "產能"],
-        "`工時模式` 可選 `24 小時連續排程` 或 `每日 8 小時排程`。若人力不足，可在 `今日人力 / 產能狀況` 選 80%、60% 或自訂比例，系統會用折減後產速排程。",
-    ),
-    (
-        ["甘特", "圖", "下載", "匯出"],
-        "排程完成後，結果區下方可下載排程 Excel、甘特圖 HTML，或一次下載 Excel + 甘特圖 ZIP。",
-    ),
-    (
-        ["排不進去", "無合格機台", "超出", "不能排"],
-        "常見原因是排程期間太短、產品沒有產速、工單限定機台後沒有合格機台、休假/停機時段太多，或每日 8 小時模式下單張工單加工時間超過可用工時。",
-    ),
-    (
-        ["kpi", "KPI", "準時", "遲交", "交期"],
-        "`交期` 只填日期時，系統會視為當天結束前交貨。若要指定小時分鐘，請在 Excel 填 `2026/09/05 15:30` 這類日期加時間。",
-    ),
-]
-
-
 def answer_usage_question(question: str) -> str:
-    text = question.strip().lower()
-    if not text:
-        return "請輸入你遇到的操作問題，例如：換模群組怎麼填、為什麼排不進去、C4/C5 怎麼指定。"
-    scored = []
-    for keywords, answer in FAQ_ANSWERS:
-        score = sum(1 for keyword in keywords if keyword.lower() in text)
-        if score:
-            scored.append((score, answer))
-    if scored:
-        return sorted(scored, reverse=True)[0][1]
-    return "目前小幫手還沒有完全對應這個問題。你可以先檢查：Excel 必要欄位、產品機台產速、畫面上的排程開始/期間、工時模式、週末/假日設定、以及工單是否有限定機台。"
+    return answer_from_manual(question)
 
 
 def load_demo() -> None:
@@ -482,6 +437,9 @@ with st.expander("操作問題小幫手", expanded=False):
     st.session_state.assistant_question = st.text_input("請輸入操作問題", value=st.session_state.assistant_question, placeholder="例如：為什麼某張工單排不進去？")
     if st.session_state.assistant_question:
         st.info(answer_usage_question(st.session_state.assistant_question))
+
+with st.expander("內建使用手冊", expanded=False):
+    st.markdown(manual_text())
 
 with st.expander("歷史排程", expanded=False):
     history = load_history()
