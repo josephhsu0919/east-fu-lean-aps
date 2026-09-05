@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Any
 
@@ -11,12 +11,32 @@ import pandas as pd
 HISTORY_PATH = Path(__file__).resolve().parents[1] / "data" / "schedule_history.json"
 
 
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, pd.Timestamp):
+        return None if pd.isna(value) else value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, time):
+        return value.strftime("%H:%M:%S")
+    if isinstance(value, pd.Timedelta):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    if hasattr(value, "item"):
+        return _json_ready(value.item())
+    try:
+        return None if pd.isna(value) else value
+    except (TypeError, ValueError):
+        return value
+
+
 def _frame_to_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
-    clean = frame.copy()
-    for column in clean.columns:
-        if pd.api.types.is_datetime64_any_dtype(clean[column]):
-            clean[column] = clean[column].dt.strftime("%Y-%m-%d %H:%M:%S")
-    return clean.where(pd.notna(clean), None).to_dict(orient="records")
+    records = frame.to_dict(orient="records")
+    return [_json_ready(record) for record in records]
 
 
 def _records_to_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
@@ -42,7 +62,7 @@ def save_history(history: list[dict[str, Any]], path: Path = HISTORY_PATH) -> No
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.with_suffix(f"{path.suffix}.tmp")
     with temp_path.open("w", encoding="utf-8") as handle:
-        json.dump(history, handle, ensure_ascii=False, indent=2)
+        json.dump(_json_ready(history), handle, ensure_ascii=False, indent=2)
     temp_path.replace(path)
 
 

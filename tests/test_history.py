@@ -49,6 +49,29 @@ def test_corrupt_history_file_does_not_crash_app():
     assert load_history(path) == []
 
 
+def test_object_timestamp_values_are_serialized_in_history():
+    path = Path("tests/.tmp/history_object_timestamp.json")
+    save_history([], path)
+    ok, issues, data = validate_workbook(demo_workbook())
+    assert ok, issues
+    result = schedule(data, "edd")
+    kpis = calculate_kpis(result, data["排程基本設定"])
+    create_schedule_version(
+        data,
+        result,
+        kpis,
+        "edd",
+        "交期優先 EDD",
+        pd.Timestamp("2026-09-03 08:00"),
+        pd.Timestamp("2026-09-04 08:00"),
+        "INITIAL",
+        rule_configuration={"schedule_start": pd.Timestamp("2026-09-03 08:00")},
+        path=path,
+    )
+    history = load_history(path)
+    assert history[0]["rule_configuration"]["schedule_start"] == "2026-09-03 08:00:00"
+
+
 def test_history_is_immutable_after_master_setting_changes():
     path = Path("tests/.tmp/history_immutable.json")
     save_history([], path)

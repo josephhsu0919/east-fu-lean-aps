@@ -54,9 +54,14 @@ def test_manual_override_for_multi_machine_product_is_respected():
 
 
 def test_24h_and_custom_horizon_flag_orders_outside_period():
+    import pandas as pd
+
     data = _data()
     short = schedule(data, "fifo", horizon_start="2026-09-03 08:00", horizon_end="2026-09-03 10:00")
     assert (short["狀態"] != "scheduled").any()
+    unscheduled = short[short["狀態"] == "超出排程期間"].iloc[0]
+    assert pd.isna(unscheduled["開始時間"])
+    assert pd.isna(unscheduled["結束時間"])
     long = schedule(data, "fifo", horizon_start="2026-09-03 08:00", horizon_end="2026-09-05 08:00")
     assert (long["狀態"] == "scheduled").sum() >= (short["狀態"] == "scheduled").sum()
 

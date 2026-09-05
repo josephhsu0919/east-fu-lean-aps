@@ -246,6 +246,7 @@ def schedule(
         changeover_hours = float(chosen.get("changeover_hours", 0.0))
         item_start = chosen.get("ready_time", machine_ready[machine] + pd.to_timedelta(changeover_hours, unit="h"))
         can_schedule = pd.Timestamp(item_start) < pd.Timestamp.max
+        visible_start = item_start if can_schedule else pd.NaT
         item_end = item_start + pd.to_timedelta(duration_hours, unit="h") if can_schedule else pd.NaT
         tardiness_hours = max((item_end - order["交期"]).total_seconds() / 3600, 0.0) if can_schedule else 0.0
         wait_hours = max((item_start - start).total_seconds() / 3600, 0.0) if can_schedule else 0.0
@@ -266,7 +267,7 @@ def schedule(
                 "產速": rate,
                 "加工時間（小時）": round(duration_hours, 4),
                 "換模時間（小時）": round(changeover_hours, 4),
-                "開始時間": item_start,
+                "開始時間": visible_start,
                 "結束時間": item_end,
                 "狀態": "scheduled" if can_schedule else "超出排程期間",
                 "是否遲交": bool(can_schedule and item_end > order["交期"]),
