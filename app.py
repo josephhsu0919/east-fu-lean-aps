@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from aps.comparator import compare_strategies, recommend_strategy
-from aps.exporter import export_schedule_excel
+from aps.exporter import export_schedule_excel, export_schedule_package_zip
 from aps.history import create_schedule_version, load_history, version_orders_frame, version_schedule_frame
 from aps.metrics import calculate_kpis, kpis_to_frame
 from aps.parser import get_schedule_window, load_workbook
@@ -342,7 +342,8 @@ with action_cols[1]:
 if st.session_state.schedule_df is not None and st.session_state.kpis is not None and st.session_state.workbook is not None:
     start, end = horizon_window(st.session_state.workbook)
     st.subheader("甘特圖")
-    st.plotly_chart(make_gantt(st.session_state.schedule_df, start, end), use_container_width=True)
+    gantt_fig = make_gantt(st.session_state.schedule_df, start, end)
+    st.plotly_chart(gantt_fig, use_container_width=True)
     st.subheader("KPI")
     render_kpis(st.session_state.kpis)
     unscheduled = st.session_state.schedule_df[st.session_state.schedule_df["狀態"] != "scheduled"]
@@ -366,5 +367,10 @@ if st.session_state.schedule_df is not None and st.session_state.kpis is not Non
     cols = st.columns(2)
     cols[0].plotly_chart(comparison_bar(st.session_state.comparison_df, "準時完成率", "準時完成率比較"), use_container_width=True)
     cols[1].plotly_chart(comparison_bar(st.session_state.comparison_df, "總遲交時間", "總遲交時間比較"), use_container_width=True)
+    gantt_html = gantt_fig.to_html(full_html=True, include_plotlyjs=True)
     excel_bytes = export_schedule_excel(st.session_state.schedule_df, st.session_state.kpis, st.session_state.comparison_df)
-    st.download_button("下載排程結果 Excel", excel_bytes, "EastFu_APS_Result.xlsx", use_container_width=True)
+    package_bytes = export_schedule_package_zip(excel_bytes, gantt_html)
+    download_cols = st.columns(3)
+    download_cols[0].download_button("下載排程結果 Excel", excel_bytes, "EastFu_APS_Result.xlsx", use_container_width=True)
+    download_cols[1].download_button("下載甘特圖 HTML", gantt_html, "EastFu_APS_Gantt.html", mime="text/html", use_container_width=True)
+    download_cols[2].download_button("一併下載 Excel + 甘特圖", package_bytes, "EastFu_APS_Package.zip", mime="application/zip", use_container_width=True)

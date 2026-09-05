@@ -1,9 +1,10 @@
 from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 
 from aps.comparator import compare_strategies, recommend_strategy
-from aps.exporter import export_schedule_excel
+from aps.exporter import export_schedule_excel, export_schedule_package_zip
 from aps.metrics import calculate_kpis
 from aps.sample_data import demo_workbook
 from aps.scheduler import schedule
@@ -48,3 +49,16 @@ def test_export_excel_contains_required_sheets():
     content = export_schedule_excel(result, kpis, comparison)
     sheets = pd.read_excel(BytesIO(content), sheet_name=None, engine="openpyxl")
     assert {"排程結果", "KPI", "策略比較"} == set(sheets)
+
+
+def test_export_package_zip_contains_excel_and_gantt_html():
+    from zipfile import ZipFile
+
+    content = export_schedule_package_zip(b"excel-bytes", "<html>gantt</html>")
+    path = Path("tests/.tmp/package.zip")
+    path.parent.mkdir(exist_ok=True)
+    path.write_bytes(content)
+    with ZipFile(path) as archive:
+        assert set(archive.namelist()) == {"EastFu_APS_Result.xlsx", "EastFu_APS_Gantt.html"}
+        assert archive.read("EastFu_APS_Result.xlsx") == b"excel-bytes"
+        assert b"gantt" in archive.read("EastFu_APS_Gantt.html")
