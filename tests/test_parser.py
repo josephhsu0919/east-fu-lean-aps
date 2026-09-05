@@ -105,6 +105,25 @@ def test_datetime_and_priority_normalization():
     assert data["待排工單"].loc[0, "交期"].hour == 17
 
 
+def test_date_only_due_date_defaults_to_end_of_day():
+    workbook = {
+        "待排工單": __import__("pandas").DataFrame(
+            [
+                {"工單編號": "UAT-1", "產品": "SIM-C2-A", "數量": 10, "單位": "PCS", "交期": "2026-09-04", "優先級": "一般"},
+                {"工單編號": "UAT-2", "產品": "SIM-C2-A", "數量": 10, "單位": "PCS", "交期": "2026-09-04 17:30", "優先級": "一般"},
+            ]
+        ),
+        "產品機台產速": __import__("pandas").DataFrame([{"產品": "SIM-C2-A", "機台": "C2", "產速_PCS_per_hr": 120}]),
+    }
+    ok, issues, data = validate_workbook(workbook)
+    assert ok, issues
+    assert data["待排工單"].loc[0, "交期"].hour == 23
+    assert data["待排工單"].loc[0, "交期"].minute == 59
+    assert data["待排工單"].loc[0, "交期"].second == 59
+    assert data["待排工單"].loc[1, "交期"].hour == 17
+    assert data["待排工單"].loc[1, "交期"].minute == 30
+
+
 def test_missing_processing_rate_gives_friendly_validation():
     workbook = {
         "待排工單": __import__("pandas").DataFrame([{"工單編號": "UAT-1", "產品": "SIM-X", "數量": 10, "交期": "2026-09-04", "優先級": "一般"}]),

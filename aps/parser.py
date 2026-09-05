@@ -120,6 +120,24 @@ def normalize_settings_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return result[result["設定項目"] != ""].reset_index(drop=True)
 
 
+def normalize_due_dates(series: pd.Series) -> pd.Series:
+    original = series.copy()
+    parsed = pd.to_datetime(series, errors="coerce")
+
+    def is_date_only(value: object) -> bool:
+        if pd.isna(value):
+            return False
+        if isinstance(value, str):
+            text = value.strip()
+            return bool(text) and not re.search(r"\d{1,2}:\d{2}", text)
+        timestamp = pd.Timestamp(value)
+        return timestamp.hour == 0 and timestamp.minute == 0 and timestamp.second == 0 and timestamp.microsecond == 0
+
+    date_only_mask = original.map(is_date_only) & parsed.notna()
+    parsed.loc[date_only_mask] = parsed.loc[date_only_mask].dt.normalize() + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    return parsed
+
+
 def default_settings_frame(start: pd.Timestamp | None = None, end: pd.Timestamp | None = None) -> pd.DataFrame:
     start_value = pd.to_datetime(start, errors="coerce")
     if pd.isna(start_value):
@@ -158,7 +176,7 @@ def normalize_workbook(workbook: dict[str, pd.DataFrame]) -> dict[str, pd.DataFr
     if "待排工單" in normalized:
         orders = normalized["待排工單"]
         if "交期" in orders.columns:
-            orders["交期"] = pd.to_datetime(orders["交期"], errors="coerce")
+            orders["交期"] = normalize_due_dates(orders["交期"])
         if "數量" in orders.columns:
             orders["數量"] = pd.to_numeric(orders["數量"], errors="coerce")
         if "單位" not in orders.columns:
