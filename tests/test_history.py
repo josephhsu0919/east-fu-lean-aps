@@ -72,6 +72,21 @@ def test_object_timestamp_values_are_serialized_in_history():
     assert history[0]["rule_configuration"]["schedule_start"] == "2026-09-03 08:00:00"
 
 
+def test_nat_values_are_serialized_as_null_in_history():
+    path = Path("tests/.tmp/history_nat.json")
+    save_history([], path)
+    ok, issues, data = validate_workbook(demo_workbook())
+    assert ok, issues
+    result = schedule(data, "fifo", horizon_start="2026-09-03 08:00", horizon_end="2026-09-03 10:00")
+    kpis = calculate_kpis(result, data["排程基本設定"])
+    create_schedule_version(data, result, kpis, "fifo", "先進先出", pd.Timestamp("2026-09-03 08:00"), pd.Timestamp("2026-09-03 10:00"), "INITIAL", path=path)
+    history = load_history(path)
+    unfinished = [row for row in history[0]["schedule"] if row["狀態"] == "超出排程期間"]
+    assert unfinished
+    assert unfinished[0]["開始時間"] is None
+    assert unfinished[0]["結束時間"] is None
+
+
 def test_history_is_immutable_after_master_setting_changes():
     path = Path("tests/.tmp/history_immutable.json")
     save_history([], path)

@@ -11,9 +11,19 @@ import pandas as pd
 HISTORY_PATH = Path(__file__).resolve().parents[1] / "data" / "schedule_history.json"
 
 
+def _is_missing_scalar(value: Any) -> bool:
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        return False
+    return bool(missing) if isinstance(missing, bool) else False
+
+
 def _json_ready(value: Any) -> Any:
+    if _is_missing_scalar(value):
+        return None
     if isinstance(value, pd.Timestamp):
-        return None if pd.isna(value) else value.strftime("%Y-%m-%d %H:%M:%S")
+        return value.strftime("%Y-%m-%d %H:%M:%S")
     if isinstance(value, datetime):
         return value.strftime("%Y-%m-%d %H:%M:%S")
     if isinstance(value, date):
