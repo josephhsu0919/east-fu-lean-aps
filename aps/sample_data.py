@@ -99,7 +99,6 @@ def demo_workbook() -> dict[str, pd.DataFrame]:
         "待排工單": demo_orders(),
         "產品機台產速": demo_rates(),
         "機台可用時間": demo_availability(),
-        "排程基本設定": demo_settings(),
         "機台初始狀態": demo_initial_state(),
         "換模時間": demo_changeovers(),
     }

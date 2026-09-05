@@ -44,6 +44,7 @@ st.markdown(
 
 
 def init_state() -> None:
+    default_start = pd.Timestamp.now(tz="Asia/Taipei").tz_localize(None).normalize() + pd.Timedelta(hours=8)
     defaults = {
         "workbook": None,
         "validation": None,
@@ -53,8 +54,9 @@ def init_state() -> None:
         "selected_strategy": "rush_edd",
         "upload_filename": "demo",
         "horizon_mode": "24 小時",
-        "custom_start": pd.Timestamp("2026-09-03 08:00"),
-        "custom_end": pd.Timestamp("2026-09-04 08:00"),
+        "schedule_start": default_start,
+        "custom_start": default_start,
+        "custom_end": default_start + pd.Timedelta(hours=24),
         "changeover_minutes": 30,
         "unavailability": pd.DataFrame(columns=["機台", "不可用開始", "不可用結束", "原因"]),
         "work_time_mode": "24 小時連續排程",
@@ -78,20 +80,42 @@ def valid_data() -> dict[str, pd.DataFrame] | None:
 
 
 def horizon_window(data: dict[str, pd.DataFrame]) -> tuple[pd.Timestamp, pd.Timestamp]:
-    base_start, _, _ = get_schedule_window(data["排程基本設定"])
     mode = st.session_state.horizon_mode
     if mode == "自訂":
         return pd.Timestamp(st.session_state.custom_start), pd.Timestamp(st.session_state.custom_end)
+    base_start = pd.Timestamp(st.session_state.schedule_start)
     return base_start, base_start + pd.to_timedelta(HORIZON_HOURS[mode], unit="h")
+
+
+def upsert_setting(settings: pd.DataFrame, item: str, value: object) -> pd.DataFrame:
+    result = settings.copy()
+    if "設定項目" not in result.columns or "設定值" not in result.columns:
+        result = pd.DataFrame(columns=["設定項目", "設定值"])
+    mask = result["設定項目"] == item
+    if mask.any():
+        result.loc[mask, "設定值"] = value
+    else:
+        result = pd.concat([result, pd.DataFrame([[item, value]], columns=["設定項目", "設定值"])], ignore_index=True)
+    return result
 
 
 def with_horizon_settings(data: dict[str, pd.DataFrame], start: pd.Timestamp, end: pd.Timestamp) -> dict[str, pd.DataFrame]:
     copied = {name: frame.copy() for name, frame in data.items()}
     settings = copied["排程基本設定"].copy()
-    settings.loc[settings["設定項目"] == "排程開始", "設定值"] = start
-    settings.loc[settings["設定項目"] == "排程結束", "設定值"] = end
+    settings = upsert_setting(settings, "排程開始", start)
+    settings = upsert_setting(settings, "排程結束", end)
+    settings = upsert_setting(settings, "時區", "Asia/Taipei")
     copied["排程基本設定"] = settings
     return copied
+
+
+def apply_workbook_defaults(data: dict[str, pd.DataFrame]) -> None:
+    start, end, _ = get_schedule_window(data["排程基本設定"])
+    if pd.notna(start):
+        st.session_state.schedule_start = pd.Timestamp(start)
+        st.session_state.custom_start = pd.Timestamp(start)
+    if pd.notna(end):
+        st.session_state.custom_end = pd.Timestamp(end)
 
 
 def render_kpis(kpis: dict[str, float]) -> None:
@@ -149,7 +173,7 @@ def export_schedule_package_zip(excel_bytes: bytes, gantt_html: str) -> bytes:
 FAQ_ANSWERS = [
     (
         ["excel", "欄位", "資料", "準備", "上傳"],
-        "Excel 至少需要 `待排工單`、`產品機台產速`、`機台可用時間`、`排程基本設定`。待排工單要有工單編號、產品、數量、單位、優先級、交期；產品機台產速要有產品、機台、產速。",
+        "Excel 至少需要 `待排工單`、`產品機台產速`、`機台可用時間`。待排工單要有工單編號、產品、數量、單位、優先級、交期；產品機台產速要有產品、機台、產速。排程開始與期間直接在畫面設定即可。",
     ),
     (
         ["允許機台", "限定機台", "c4", "c5", "指定機台"],
@@ -189,13 +213,15 @@ def answer_usage_question(question: str) -> str:
             scored.append((score, answer))
     if scored:
         return sorted(scored, reverse=True)[0][1]
-    return "目前小幫手還沒有完全對應這個問題。你可以先檢查：Excel 必要欄位、產品機台產速、排程期間、工時模式、週末/假日設定、以及工單是否有限定機台。"
+    return "目前小幫手還沒有完全對應這個問題。你可以先檢查：Excel 必要欄位、產品機台產速、畫面上的排程開始/期間、工時模式、週末/假日設定、以及工單是否有限定機台。"
 
 
 def load_demo() -> None:
     write_demo_excel(DEMO_EXCEL_PATH)
     st.session_state.workbook = load_workbook(DEMO_EXCEL_PATH)
     st.session_state.validation = validate_workbook(st.session_state.workbook)
+    if st.session_state.validation[0] and st.session_state.validation[2] is not None:
+        apply_workbook_defaults(st.session_state.validation[2])
     st.session_state.upload_filename = DEMO_EXCEL_PATH.name
     st.session_state.schedule_df = None
     st.session_state.kpis = None
@@ -296,6 +322,8 @@ with top[1]:
         try:
             st.session_state.workbook = load_workbook(uploaded)
             st.session_state.validation = validate_workbook(st.session_state.workbook)
+            if st.session_state.validation[0] and st.session_state.validation[2] is not None:
+                apply_workbook_defaults(st.session_state.validation[2])
             st.session_state.upload_filename = uploaded.name
             st.session_state.schedule_df = None
             st.session_state.kpis = None
@@ -320,6 +348,8 @@ with controls[0]:
     if st.session_state.horizon_mode == "自訂":
         st.session_state.custom_start = datetime_fields("開始", pd.Timestamp(st.session_state.custom_start), "custom_start")
         st.session_state.custom_end = datetime_fields("結束", pd.Timestamp(st.session_state.custom_end), "custom_end")
+    else:
+        st.session_state.schedule_start = datetime_fields("排程開始", pd.Timestamp(st.session_state.schedule_start), "schedule_start")
 with controls[1]:
     st.session_state.selected_strategy = st.selectbox("排程策略", MAIN_STRATEGIES, format_func=lambda code: STRATEGIES[code].name)
 

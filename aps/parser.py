@@ -8,7 +8,9 @@ import unicodedata
 import pandas as pd
 
 
-REQUIRED_SHEETS = ["待排工單", "產品機台產速", "機台可用時間", "排程基本設定"]
+REQUIRED_SHEETS = ["待排工單", "產品機台產速", "機台可用時間"]
+DEFAULT_SCHEDULE_START = pd.Timestamp("2026-09-03 08:00")
+DEFAULT_SCHEDULE_END = pd.Timestamp("2026-09-04 08:00")
 CANONICAL_COLUMNS = {
     "工單編號": ["工單編號", "工單", "製令單號", "wo", "work_order", "work_order_no"],
     "產品": ["產品編號", "產品", "產品品號", "品號", "product", "product_code"],
@@ -118,10 +120,41 @@ def normalize_settings_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return result[result["設定項目"] != ""].reset_index(drop=True)
 
 
+def default_settings_frame(start: pd.Timestamp | None = None, end: pd.Timestamp | None = None) -> pd.DataFrame:
+    start_value = pd.to_datetime(start, errors="coerce")
+    if pd.isna(start_value):
+        start_value = DEFAULT_SCHEDULE_START
+    end_value = pd.to_datetime(end, errors="coerce")
+    if pd.isna(end_value) or end_value <= start_value:
+        end_value = start_value + pd.Timedelta(hours=24)
+    return pd.DataFrame(
+        [["排程開始", start_value], ["排程結束", end_value], ["時區", "Asia/Taipei"]],
+        columns=["設定項目", "設定值"],
+    )
+
+
+def infer_settings_from_availability(availability: pd.DataFrame | None) -> pd.DataFrame:
+    if availability is None or availability.empty or not {"可用開始", "可用結束"}.issubset(availability.columns):
+        return default_settings_frame()
+    start = availability["可用開始"].dropna().min()
+    end = availability["可用結束"].dropna().max()
+    return default_settings_frame(start, end)
+
+
+def _upsert_setting(settings: pd.DataFrame, item: str, value: object) -> pd.DataFrame:
+    result = settings.copy()
+    if "設定項目" not in result.columns or "設定值" not in result.columns:
+        result = pd.DataFrame(columns=["設定項目", "設定值"])
+    mask = result["設定項目"] == item
+    if mask.any():
+        result.loc[mask, "設定值"] = value
+    else:
+        result = pd.concat([result, pd.DataFrame([[item, value]], columns=["設定項目", "設定值"])], ignore_index=True)
+    return result
+
+
 def normalize_workbook(workbook: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     normalized = {clean_label(name): normalize_columns(frame.copy()) for name, frame in workbook.items()}
-    if "排程基本設定" in workbook:
-        normalized["排程基本設定"] = normalize_settings_frame(workbook["排程基本設定"])
     if "待排工單" in normalized:
         orders = normalized["待排工單"]
         if "交期" in orders.columns:
@@ -157,6 +190,20 @@ def normalize_workbook(workbook: dict[str, pd.DataFrame]) -> dict[str, pd.DataFr
         if "初始產品" not in initial.columns and "產品" in initial.columns:
             initial["初始產品"] = initial["產品"]
         normalized["機台初始狀態"] = initial
+    inferred_settings = infer_settings_from_availability(normalized.get("機台可用時間"))
+    if "排程基本設定" in workbook:
+        settings = normalize_settings_frame(workbook["排程基本設定"])
+        start, end, timezone = get_schedule_window(settings)
+        inferred_start, inferred_end, _ = get_schedule_window(inferred_settings)
+        if pd.isna(start):
+            settings = _upsert_setting(settings, "排程開始", inferred_start)
+        if pd.isna(end) or pd.notna(start) and end <= start:
+            settings = _upsert_setting(settings, "排程結束", inferred_end)
+        if not timezone or timezone == "nan":
+            settings = _upsert_setting(settings, "時區", "Asia/Taipei")
+        normalized["排程基本設定"] = settings
+    else:
+        normalized["排程基本設定"] = inferred_settings
     return normalized
 
 

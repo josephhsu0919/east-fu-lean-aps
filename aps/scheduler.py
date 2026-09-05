@@ -5,7 +5,7 @@ import re
 
 import pandas as pd
 
-from .parser import get_schedule_window
+from .parser import get_schedule_window, normalize_workbook
 from .strategies import sort_orders
 
 
@@ -165,6 +165,8 @@ def schedule(
     default_changeover_minutes: float = 30,
     unavailability: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
+    if "排程基本設定" not in workbook:
+        workbook = normalize_workbook(workbook)
     manual_machine_overrides = manual_machine_overrides or {}
     orders = workbook["待排工單"].copy()
     rates = workbook["產品機台產速"].copy()
