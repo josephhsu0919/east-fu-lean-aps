@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/.tmp/
+data/schedule_history.json
+.env
+.venv/
+venv/
+
