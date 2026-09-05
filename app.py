@@ -13,8 +13,8 @@ from aps.comparator import compare_strategies, recommend_strategy
 from aps.exporter import export_schedule_excel
 from aps.history import create_schedule_version, load_history, version_orders_frame, version_schedule_frame
 from aps.metrics import calculate_kpis, kpis_to_frame
-from aps.parser import get_schedule_window, load_workbook
-from aps.sample_data import demo_workbook, write_demo_excel
+from aps.parser import clean_label, get_schedule_window, load_workbook
+from aps.sample_data import write_demo_excel
 from aps.scheduler import MACHINES, schedule
 from aps.strategies import STRATEGIES
 from aps.validator import validate_workbook
@@ -34,6 +34,7 @@ st.markdown(
     <style>
     html, body, [class*="css"] { font-size: 18px; }
     .stButton button, .stDownloadButton button { font-size: 20px; font-weight: 700; min-height: 3rem; }
+    .stButton button[kind="primary"] { background: #ff464d; border-color: #ff464d; box-shadow: 0 8px 18px rgba(255,70,77,.22); }
     div[data-testid="stMetricValue"] { font-size: 2.2rem; }
     h1 { font-size: 2.6rem; }
     h2, h3 { font-size: 1.6rem; }
@@ -118,6 +119,11 @@ def apply_workbook_defaults(data: dict[str, pd.DataFrame]) -> None:
         st.session_state.custom_end = pd.Timestamp(end)
 
 
+def has_timing_defaults(workbook: dict[str, pd.DataFrame]) -> bool:
+    sheet_names = {clean_label(name) for name in workbook}
+    return bool({"排程基本設定", "機台可用時間"} & sheet_names)
+
+
 def render_kpis(kpis: dict[str, float]) -> None:
     cols = st.columns(4)
     cols[0].metric("準時率", f"{kpis['準時完成率']:.1f}%")
@@ -173,7 +179,7 @@ def export_schedule_package_zip(excel_bytes: bytes, gantt_html: str) -> bytes:
 FAQ_ANSWERS = [
     (
         ["excel", "欄位", "資料", "準備", "上傳"],
-        "Excel 至少需要 `待排工單`、`產品機台產速`、`機台可用時間`。待排工單要有工單編號、產品、數量、單位、優先級、交期；產品機台產速要有產品、機台、產速。排程開始與期間直接在畫面設定即可。",
+        "Excel 至少需要 `待排工單`、`產品機台產速`。待排工單要有工單編號、產品、數量、單位、優先級、交期；產品機台產速要有產品、機台、產速。機台可用時間、排程開始與期間都可以直接在畫面處理。",
     ),
     (
         ["允許機台", "限定機台", "c4", "c5", "指定機台"],
@@ -184,8 +190,8 @@ FAQ_ANSWERS = [
         "`換模群組` 是產品族群。排程時若前後工單群組不同，會查 `換模時間` 表的來源群組到目標群組分鐘數；查不到才用預設換模時間。",
     ),
     (
-        ["週末", "假日", "國定", "不排程", "休假"],
-        "在 `基本設定` 勾選 `週末不排程`，國定假日可填在 `指定日期不排程`。系統會把那些日期轉成全機台不可用時段。",
+        ["停機", "特殊", "週末", "假日", "國定", "不排程", "休假"],
+        "平常假設機台都可排。臨時停機、保養、盤點、國定假日可在 `特殊狀況 / 停機` 或 `基本設定` 的不排程日期中輸入，系統會避開那些時段。",
     ),
     (
         ["8小時", "8 小時", "工時", "24小時", "24 小時", "上班"],
@@ -220,7 +226,7 @@ def load_demo() -> None:
     write_demo_excel(DEMO_EXCEL_PATH)
     st.session_state.workbook = load_workbook(DEMO_EXCEL_PATH)
     st.session_state.validation = validate_workbook(st.session_state.workbook)
-    if st.session_state.validation[0] and st.session_state.validation[2] is not None:
+    if has_timing_defaults(st.session_state.workbook) and st.session_state.validation[0] and st.session_state.validation[2] is not None:
         apply_workbook_defaults(st.session_state.validation[2])
     st.session_state.upload_filename = DEMO_EXCEL_PATH.name
     st.session_state.schedule_df = None
@@ -322,7 +328,7 @@ with top[1]:
         try:
             st.session_state.workbook = load_workbook(uploaded)
             st.session_state.validation = validate_workbook(st.session_state.workbook)
-            if st.session_state.validation[0] and st.session_state.validation[2] is not None:
+            if has_timing_defaults(st.session_state.workbook) and st.session_state.validation[0] and st.session_state.validation[2] is not None:
                 apply_workbook_defaults(st.session_state.validation[2])
             st.session_state.upload_filename = uploaded.name
             st.session_state.schedule_df = None
@@ -353,7 +359,7 @@ with controls[0]:
 with controls[1]:
     st.session_state.selected_strategy = st.selectbox("排程策略", MAIN_STRATEGIES, format_func=lambda code: STRATEGIES[code].name)
 
-quick = st.columns(3)
+quick = st.columns(2)
 with quick[0]:
     with st.expander("＋ 急單"):
         urgent_id = st.text_input("工單編號", value="URGENT-001")
@@ -366,12 +372,22 @@ with quick[0]:
                 run_schedule("URGENT_ORDER")
                 st.success("急單重排完成")
 with quick[1]:
-    with st.expander("⚠ 今日異常"):
-        down_machine = st.selectbox("Machine", MACHINES)
-        down_from = datetime_fields("Unavailable from", pd.Timestamp("2026-09-03 12:00"), "down_from")
-        down_until = datetime_fields("Unavailable until", pd.Timestamp("2026-09-03 14:00"), "down_until")
-        reason = st.text_input("Reason", value="")
-        if st.button("重新排程", key="downtime_replan", use_container_width=True):
+    with st.expander("特殊狀況 / 停機"):
+        down_machine = st.selectbox("機台", MACHINES)
+        down_from = datetime_fields("不可用開始", pd.Timestamp(st.session_state.schedule_start) + pd.Timedelta(hours=4), "down_from")
+        down_until = datetime_fields("不可用結束", pd.Timestamp(st.session_state.schedule_start) + pd.Timedelta(hours=6), "down_until")
+        reason = st.text_input("原因", value="")
+        if not st.session_state.unavailability.empty:
+            st.dataframe(st.session_state.unavailability, use_container_width=True)
+        downtime_cols = st.columns(2)
+        with downtime_cols[0]:
+            add_downtime = st.button("加入並重新排程", key="downtime_replan", use_container_width=True)
+        with downtime_cols[1]:
+            clear_downtime = st.button("清除特殊狀況", key="clear_downtime", use_container_width=True)
+        if clear_downtime:
+            st.session_state.unavailability = pd.DataFrame(columns=["機台", "不可用開始", "不可用結束", "原因"])
+            st.success("已清除特殊狀況")
+        if add_downtime:
             st.session_state.unavailability = pd.concat(
                 [
                     st.session_state.unavailability,
@@ -380,21 +396,6 @@ with quick[1]:
                 ignore_index=True,
             )
             run_schedule("MACHINE_DOWN")
-with quick[2]:
-    with st.expander("歷史排程"):
-        history = load_history()
-        if not history:
-            st.caption("尚無歷史版本")
-        else:
-            labels = [f"{v['created_at']}  {v['version_id']}  {v['order_count']} 筆  {v['scheduling_rule_name']}" for v in history]
-            selected = st.selectbox("版本", range(len(labels)), format_func=lambda idx: labels[idx], index=len(labels) - 1)
-            version = history[selected]
-            st.write(f"{version['reason']} | {version['horizon_start']} - {version['horizon_end']}")
-            st.dataframe(version_orders_frame(version), use_container_width=True)
-            old_schedule = version_schedule_frame(version)
-            if not old_schedule.empty:
-                st.plotly_chart(make_gantt(old_schedule, pd.Timestamp(version["horizon_start"]), pd.Timestamp(version["horizon_end"])), use_container_width=True)
-                st.dataframe(kpis_to_frame(version["kpis"]), use_container_width=True)
 
 with st.expander("基本設定", expanded=data is not None):
     if data is None:
@@ -420,15 +421,29 @@ with st.expander("基本設定", expanded=data is not None):
             st.session_state.validation = validate_workbook(updated)
             st.success("產品機台產速與換模時間已保存")
 
-action_cols = st.columns([2, 1])
-with action_cols[1]:
-    if st.button("確認設定並開始排程", type="primary", disabled=data is None, use_container_width=True):
-        run_schedule("INITIAL")
+st.markdown("### 開始排程")
+if st.button("確認設定並開始排程", type="primary", disabled=data is None, use_container_width=True):
+    run_schedule("INITIAL")
 
 with st.expander("操作問題小幫手", expanded=False):
     st.session_state.assistant_question = st.text_input("請輸入操作問題", value=st.session_state.assistant_question, placeholder="例如：為什麼某張工單排不進去？")
     if st.session_state.assistant_question:
         st.info(answer_usage_question(st.session_state.assistant_question))
+
+with st.expander("歷史排程", expanded=False):
+    history = load_history()
+    if not history:
+        st.caption("尚無歷史版本")
+    else:
+        labels = [f"{v['created_at']}  {v['version_id']}  {v['order_count']} 筆  {v['scheduling_rule_name']}" for v in history]
+        selected = st.selectbox("版本", range(len(labels)), format_func=lambda idx: labels[idx], index=len(labels) - 1)
+        version = history[selected]
+        st.write(f"{version['reason']} | {version['horizon_start']} - {version['horizon_end']}")
+        st.dataframe(version_orders_frame(version), use_container_width=True)
+        old_schedule = version_schedule_frame(version)
+        if not old_schedule.empty:
+            st.plotly_chart(make_gantt(old_schedule, pd.Timestamp(version["horizon_start"]), pd.Timestamp(version["horizon_end"])), use_container_width=True)
+            st.dataframe(kpis_to_frame(version["kpis"]), use_container_width=True)
 
 if st.session_state.schedule_df is not None and st.session_state.kpis is not None and st.session_state.workbook is not None:
     start, end = horizon_window(st.session_state.workbook)

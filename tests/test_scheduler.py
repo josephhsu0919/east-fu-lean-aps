@@ -122,6 +122,13 @@ def test_non_working_calendar_period_contains_no_job():
     import pandas as pd
 
     data = _data()
+    data["機台可用時間"] = pd.DataFrame(
+        [
+            {"機台": "C2", "可用開始": pd.Timestamp("2026-09-03 08:00"), "可用結束": pd.Timestamp("2026-09-04 08:00")},
+            {"機台": "C4", "可用開始": pd.Timestamp("2026-09-03 14:00"), "可用結束": pd.Timestamp("2026-09-04 08:00")},
+            {"機台": "C5", "可用開始": pd.Timestamp("2026-09-03 08:00"), "可用結束": pd.Timestamp("2026-09-04 08:00")},
+        ]
+    )
     data["機台可用時間"].loc[data["機台可用時間"]["機台"] == "C4", "可用開始"] = pd.Timestamp("2026-09-03 14:00")
     result = schedule(data, "fifo")
     c4 = result[(result["指派機台"] == "C4") & (result["狀態"] == "scheduled")]
@@ -184,7 +191,6 @@ def test_weekend_or_holiday_unavailability_blocks_all_machines():
     import pandas as pd
 
     data = _data()
-    data["機台可用時間"]["可用結束"] = pd.Timestamp("2026-09-08 08:00")
     downtime = pd.DataFrame(
         [
             {"機台": machine, "不可用開始": pd.Timestamp("2026-09-05 00:00"), "不可用結束": pd.Timestamp("2026-09-07 00:00"), "原因": "weekend"}
@@ -208,7 +214,6 @@ def test_daily_8_hour_shift_blocks_are_respected():
         ]
     )
     data["產品機台產速"] = data["產品機台產速"][data["產品機台產速"]["產品"] == "SIM-C2-A"]
-    data["機台可用時間"].loc[data["機台可用時間"]["機台"] == "C2", "可用結束"] = pd.Timestamp("2026-09-05 18:00")
     downtime = pd.DataFrame([{"機台": "C2", "不可用開始": pd.Timestamp("2026-09-04 16:00"), "不可用結束": pd.Timestamp("2026-09-05 08:00"), "原因": "shift"}])
     result = schedule(data, "fifo", horizon_start="2026-09-04 08:00", horizon_end="2026-09-05 18:00", unavailability=downtime)
     row = result[result["工單編號"] == "B"].iloc[0]

@@ -8,7 +8,7 @@ import unicodedata
 import pandas as pd
 
 
-REQUIRED_SHEETS = ["待排工單", "產品機台產速", "機台可用時間"]
+REQUIRED_SHEETS = ["待排工單", "產品機台產速"]
 DEFAULT_SCHEDULE_START = pd.Timestamp("2026-09-03 08:00")
 DEFAULT_SCHEDULE_END = pd.Timestamp("2026-09-04 08:00")
 CANONICAL_COLUMNS = {

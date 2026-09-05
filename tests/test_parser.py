@@ -17,6 +17,7 @@ def test_demo_excel_can_be_read():
     assert len(data["待排工單"]) == 10
     assert "換模時間" in data
     assert "排程基本設定" not in workbook
+    assert "機台可用時間" not in workbook
     assert "排程基本設定" in data
 
 
@@ -61,6 +62,19 @@ def test_schedule_settings_sheet_is_optional():
     assert ok, issues
     assert data["排程基本設定"].loc[data["排程基本設定"]["設定項目"] == "排程開始", "設定值"].iloc[0] == pd.Timestamp("2026-09-03 08:00")
     assert data["排程基本設定"].loc[data["排程基本設定"]["設定項目"] == "排程結束", "設定值"].iloc[0] == pd.Timestamp("2026-09-04 08:00")
+
+
+def test_machine_availability_sheet_is_optional():
+    import pandas as pd
+
+    workbook = {
+        "待排工單": pd.DataFrame([{"工單編號": "UAT-1", "產品": "SIM-C2-A", "數量": 10, "單位": "PCS", "交期": "2026-09-04", "優先級": "一般"}]),
+        "產品機台產速": pd.DataFrame([{"產品": "SIM-C2-A", "機台": "C2", "產速_PCS_per_hr": 120}]),
+    }
+    ok, issues, data = validate_workbook(workbook)
+    assert ok, issues
+    result = schedule(data, "edd", horizon_start="2026-09-03 08:00", horizon_end="2026-09-03 12:00")
+    assert result.loc[0, "狀態"] == "scheduled"
 
 
 def test_missing_required_column_returns_friendly_error():
