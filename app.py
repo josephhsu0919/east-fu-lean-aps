@@ -266,7 +266,7 @@ else:
         for issue in issues:
             st.write(f"- {issue}")
 
-controls = st.columns([1.3, 1.1, 1])
+controls = st.columns([1.3, 1.1])
 with controls[0]:
     st.session_state.horizon_mode = st.radio("排程期間", ["24 小時", "48 小時", "72 小時", "一週", "自訂"], horizontal=True)
     if st.session_state.horizon_mode == "自訂":
@@ -274,11 +274,6 @@ with controls[0]:
         st.session_state.custom_end = datetime_fields("結束", pd.Timestamp(st.session_state.custom_end), "custom_end")
 with controls[1]:
     st.session_state.selected_strategy = st.selectbox("排程策略", MAIN_STRATEGIES, format_func=lambda code: STRATEGIES[code].name)
-with controls[2]:
-    st.write("")
-    st.write("")
-    if st.button("開始排程", disabled=data is None, use_container_width=True):
-        run_schedule("INITIAL")
 
 quick = st.columns(3)
 with quick[0]:
@@ -323,7 +318,7 @@ with quick[2]:
                 st.plotly_chart(make_gantt(old_schedule, pd.Timestamp(version["horizon_start"]), pd.Timestamp(version["horizon_end"])), use_container_width=True)
                 st.dataframe(kpis_to_frame(version["kpis"]), use_container_width=True)
 
-with st.expander("基本設定", expanded=False):
+with st.expander("基本設定", expanded=data is not None):
     if data is None:
         st.caption("載入資料後可查看與編輯基本設定。")
     else:
@@ -338,6 +333,11 @@ with st.expander("基本設定", expanded=False):
             st.session_state.workbook = updated
             st.session_state.validation = validate_workbook(updated)
             st.success("產速設定已保存")
+
+action_cols = st.columns([2, 1])
+with action_cols[1]:
+    if st.button("確認設定並開始排程", type="primary", disabled=data is None, use_container_width=True):
+        run_schedule("INITIAL")
 
 if st.session_state.schedule_df is not None and st.session_state.kpis is not None and st.session_state.workbook is not None:
     start, end = horizon_window(st.session_state.workbook)
