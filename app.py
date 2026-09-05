@@ -8,6 +8,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pandas as pd
 import streamlit as st
 
+from aps.calendar import build_calendar_unavailability, parse_non_working_dates
 from aps.comparator import compare_strategies, recommend_strategy
 from aps.exporter import export_schedule_excel
 from aps.history import create_schedule_version, load_history, version_orders_frame, version_schedule_frame
@@ -56,8 +57,12 @@ def init_state() -> None:
         "custom_end": pd.Timestamp("2026-09-04 08:00"),
         "changeover_minutes": 30,
         "unavailability": pd.DataFrame(columns=["機台", "不可用開始", "不可用結束", "原因"]),
+        "work_time_mode": "24 小時連續排程",
+        "workday_start_time": time(8, 0),
+        "daily_work_hours": 8,
         "exclude_weekends": False,
         "non_working_dates": "",
+        "assistant_question": "",
         "last_version": None,
     }
     for key, value in defaults.items():
@@ -112,33 +117,17 @@ def datetime_fields(label: str, value: pd.Timestamp, key: str) -> pd.Timestamp:
     return timestamp
 
 
-def parse_non_working_dates(text: str) -> list[pd.Timestamp]:
-    dates: list[pd.Timestamp] = []
-    for item in str(text).replace(",", "\n").replace("，", "\n").splitlines():
-        item = item.strip()
-        if not item:
-            continue
-        parsed = pd.to_datetime(item, errors="coerce")
-        if pd.notna(parsed):
-            dates.append(pd.Timestamp(parsed).normalize())
-    return sorted(set(dates))
-
-
 def calendar_unavailability(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
-    days: set[pd.Timestamp] = set(parse_non_working_dates(st.session_state.non_working_dates))
-    if st.session_state.exclude_weekends:
-        for day in pd.date_range(pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize(), freq="D"):
-            if day.weekday() >= 5:
-                days.add(pd.Timestamp(day).normalize())
-    rows = []
-    for day in sorted(days):
-        block_start = max(day, pd.Timestamp(start))
-        block_end = min(day + pd.Timedelta(days=1), pd.Timestamp(end))
-        if block_start >= block_end:
-            continue
-        for machine in MACHINES:
-            rows.append({"機台": machine, "不可用開始": block_start, "不可用結束": block_end, "原因": "週末/指定休假日"})
-    return pd.DataFrame(rows, columns=["機台", "不可用開始", "不可用結束", "原因"])
+    return build_calendar_unavailability(
+        MACHINES,
+        start,
+        end,
+        exclude_weekends=st.session_state.exclude_weekends,
+        non_working_dates=st.session_state.non_working_dates,
+        work_time_mode=st.session_state.work_time_mode,
+        workday_start=st.session_state.workday_start_time,
+        daily_work_hours=st.session_state.daily_work_hours,
+    )
 
 
 def effective_unavailability(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
@@ -155,6 +144,52 @@ def export_schedule_package_zip(excel_bytes: bytes, gantt_html: str) -> bytes:
         archive.writestr("EastFu_APS_Result.xlsx", excel_bytes)
         archive.writestr("EastFu_APS_Gantt.html", gantt_html.encode("utf-8"))
     return output.getvalue()
+
+
+FAQ_ANSWERS = [
+    (
+        ["excel", "欄位", "資料", "準備", "上傳"],
+        "Excel 至少需要 `待排工單`、`產品機台產速`、`機台可用時間`、`排程基本設定`。待排工單要有工單編號、產品、數量、單位、優先級、交期；產品機台產速要有產品、機台、產速。",
+    ),
+    (
+        ["允許機台", "限定機台", "c4", "c5", "指定機台"],
+        "`產品機台產速` 用來定義產品原則上可在哪些機台做；`待排工單` 的 `允許機台` 是單張工單的例外限制，例如 `C4,C5`。",
+    ),
+    (
+        ["換模", "換線", "群組"],
+        "`換模群組` 是產品族群。排程時若前後工單群組不同，會查 `換模時間` 表的來源群組到目標群組分鐘數；查不到才用預設換模時間。",
+    ),
+    (
+        ["週末", "假日", "國定", "不排程", "休假"],
+        "在 `基本設定` 勾選 `週末不排程`，國定假日可填在 `指定日期不排程`。系統會把那些日期轉成全機台不可用時段。",
+    ),
+    (
+        ["8小時", "8 小時", "工時", "24小時", "24 小時", "上班"],
+        "`工時模式` 可選 `24 小時連續排程` 或 `每日 8 小時排程`。每日 8 小時會從你設定的每日開始時間往後排指定工時，其餘時間不排程。",
+    ),
+    (
+        ["甘特", "圖", "下載", "匯出"],
+        "排程完成後，結果區下方可下載排程 Excel、甘特圖 HTML，或一次下載 Excel + 甘特圖 ZIP。",
+    ),
+    (
+        ["排不進去", "無合格機台", "超出", "不能排"],
+        "常見原因是排程期間太短、產品沒有產速、工單限定機台後沒有合格機台、休假/停機時段太多，或每日 8 小時模式下單張工單加工時間超過可用工時。",
+    ),
+]
+
+
+def answer_usage_question(question: str) -> str:
+    text = question.strip().lower()
+    if not text:
+        return "請輸入你遇到的操作問題，例如：換模群組怎麼填、為什麼排不進去、C4/C5 怎麼指定。"
+    scored = []
+    for keywords, answer in FAQ_ANSWERS:
+        score = sum(1 for keyword in keywords if keyword.lower() in text)
+        if score:
+            scored.append((score, answer))
+    if scored:
+        return sorted(scored, reverse=True)[0][1]
+    return "目前小幫手還沒有完全對應這個問題。你可以先檢查：Excel 必要欄位、產品機台產速、排程期間、工時模式、週末/假日設定、以及工單是否有限定機台。"
 
 
 def load_demo() -> None:
@@ -209,6 +244,9 @@ def run_schedule(reason: str = "INITIAL") -> None:
                 "strategy_code": st.session_state.selected_strategy,
                 "horizon_mode": st.session_state.horizon_mode,
                 "default_changeover_minutes": st.session_state.changeover_minutes,
+                "work_time_mode": st.session_state.work_time_mode,
+                "workday_start_time": st.session_state.workday_start_time.strftime("%H:%M"),
+                "daily_work_hours": st.session_state.daily_work_hours,
                 "exclude_weekends": st.session_state.exclude_weekends,
                 "non_working_dates": [day.strftime("%Y-%m-%d") for day in parse_non_working_dates(st.session_state.non_working_dates)],
             },
@@ -332,6 +370,11 @@ with st.expander("基本設定", expanded=data is not None):
     if data is None:
         st.caption("載入資料後可查看與編輯基本設定。")
     else:
+        st.session_state.work_time_mode = st.radio("工時模式", ["24 小時連續排程", "每日 8 小時排程"], horizontal=True)
+        if st.session_state.work_time_mode == "每日 8 小時排程":
+            work_cols = st.columns(2)
+            st.session_state.workday_start_time = work_cols[0].time_input("每日開始時間", value=st.session_state.workday_start_time)
+            st.session_state.daily_work_hours = work_cols[1].number_input("每日可排工時", min_value=1.0, max_value=24.0, value=float(st.session_state.daily_work_hours), step=0.5)
         st.session_state.changeover_minutes = st.number_input("預設換模時間（分鐘）", min_value=0, value=int(st.session_state.changeover_minutes), step=5)
         st.session_state.exclude_weekends = st.checkbox("週末不排程（星期六、星期日）", value=bool(st.session_state.exclude_weekends))
         st.session_state.non_working_dates = st.text_area("指定日期不排程（國定假日 / 盤點 / 全廠休假）", value=st.session_state.non_working_dates, placeholder="例如：\n2026-09-28\n2026-10-10")
@@ -351,6 +394,11 @@ action_cols = st.columns([2, 1])
 with action_cols[1]:
     if st.button("確認設定並開始排程", type="primary", disabled=data is None, use_container_width=True):
         run_schedule("INITIAL")
+
+with st.expander("操作問題小幫手", expanded=False):
+    st.session_state.assistant_question = st.text_input("請輸入操作問題", value=st.session_state.assistant_question, placeholder="例如：為什麼某張工單排不進去？")
+    if st.session_state.assistant_question:
+        st.info(answer_usage_question(st.session_state.assistant_question))
 
 if st.session_state.schedule_df is not None and st.session_state.kpis is not None and st.session_state.workbook is not None:
     start, end = horizon_window(st.session_state.workbook)

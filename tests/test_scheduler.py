@@ -195,3 +195,21 @@ def test_weekend_or_holiday_unavailability_blocks_all_machines():
     scheduled = result[result["狀態"] == "scheduled"]
     for _, row in scheduled.iterrows():
         assert row["結束時間"] <= pd.Timestamp("2026-09-05 00:00") or row["開始時間"] >= pd.Timestamp("2026-09-07 00:00")
+
+
+def test_daily_8_hour_shift_blocks_are_respected():
+    import pandas as pd
+
+    data = _data()
+    data["待排工單"] = pd.DataFrame(
+        [
+            {"工單編號": "A", "產品": "SIM-C2-A", "數量": 900, "單位": "PCS", "優先級": "一般", "交期": "2026-09-05", "_原始順序": 1},
+            {"工單編號": "B", "產品": "SIM-C2-A", "數量": 120, "單位": "PCS", "優先級": "一般", "交期": "2026-09-05", "_原始順序": 2},
+        ]
+    )
+    data["產品機台產速"] = data["產品機台產速"][data["產品機台產速"]["產品"] == "SIM-C2-A"]
+    data["機台可用時間"].loc[data["機台可用時間"]["機台"] == "C2", "可用結束"] = pd.Timestamp("2026-09-05 18:00")
+    downtime = pd.DataFrame([{"機台": "C2", "不可用開始": pd.Timestamp("2026-09-04 16:00"), "不可用結束": pd.Timestamp("2026-09-05 08:00"), "原因": "shift"}])
+    result = schedule(data, "fifo", horizon_start="2026-09-04 08:00", horizon_end="2026-09-05 18:00", unavailability=downtime)
+    row = result[result["工單編號"] == "B"].iloc[0]
+    assert row["開始時間"] >= pd.Timestamp("2026-09-05 08:00")
