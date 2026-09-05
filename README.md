@@ -13,7 +13,7 @@ python -m streamlit run app.py
 若要部署給公司同仁連線使用，請見 [DEPLOYMENT.md](DEPLOYMENT.md)。
 若要部署成公開網址，請見 [STREAMLIT_CLOUD_DEPLOY.md](STREAMLIT_CLOUD_DEPLOY.md)。
 
-Demo Excel 路徑：
+內建標準資料 Excel 路徑：
 
 ```text
 data/EastFu_Lean_APS_Demo.xlsx
@@ -21,7 +21,7 @@ data/EastFu_Lean_APS_Demo.xlsx
 
 ## 使用流程
 
-上傳 Excel，或按「載入東福 10 筆示範資料」，完成驗證後選擇策略並執行 APS 排程。系統會產生排程結果、Plotly 甘特圖、KPI、策略比較與推薦方案，並可匯出 Excel 與甘特圖 HTML。
+上傳 Excel，或按「載入東福標準排程資料」，完成驗證後選擇策略並執行 APS 排程。系統會產生排程結果、Plotly 甘特圖、KPI、策略比較與推薦方案，並可匯出 Excel 與甘特圖 HTML。
 
 日常主流程控制在五步：
 

@@ -152,7 +152,7 @@ def run_schedule(reason: str = "INITIAL") -> None:
             end,
             reason,
             upload_filename=st.session_state.upload_filename,
-            input_source="Demo" if st.session_state.upload_filename == DEMO_EXCEL_PATH.name else "Uploaded Excel",
+            input_source="內建標準資料" if st.session_state.upload_filename == DEMO_EXCEL_PATH.name else "Uploaded Excel",
             unavailability=st.session_state.unavailability,
             default_changeover_minutes=st.session_state.changeover_minutes,
             rule_configuration={
@@ -187,7 +187,7 @@ st.caption("Excel 驅動的 Lean APS 排程與決策支援工具")
 
 top = st.columns([1, 2])
 with top[0]:
-    if st.button("載入東福 10 筆示範資料", type="primary", use_container_width=True):
+    if st.button("載入東福標準排程資料", type="primary", use_container_width=True):
         load_demo()
 with top[1]:
     uploaded = st.file_uploader("上傳排程 Excel", type=["xlsx"], label_visibility="collapsed")
@@ -203,7 +203,7 @@ with top[1]:
 
 data = valid_data()
 if st.session_state.validation is None:
-    st.info("請載入示範資料或上傳排程 Excel。")
+    st.info("請載入東福標準排程資料或上傳排程 Excel。")
 else:
     ok, issues, data_or_none = st.session_state.validation
     if ok and data_or_none is not None:
