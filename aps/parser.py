@@ -16,6 +16,7 @@ CANONICAL_COLUMNS = {
     "單位": ["單位", "數量單位", "unit"],
     "交期": ["交期", "需求日期", "需求時間", "due date", "due_date"],
     "優先級": ["優先級", "優先順序", "工單急迫程度", "priority"],
+    "允許機台": ["允許機台", "限定機台", "可排機台", "指定機台", "allowed_machines", "eligible_machines"],
     "機台": ["機台", "machine", "resource"],
     "可生產": ["可生產", "eligible", "can_produce"],
     "產速_PCS_per_hr": ["產速_pcs_per_hr", "pcs/hr", "pcs per hr", "rate", "rate_per_hour", "產速", "標準產速", "每小時產量"],

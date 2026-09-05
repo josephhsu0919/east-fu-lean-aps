@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 
 import pandas as pd
 
@@ -13,6 +14,17 @@ MACHINES = ["C2", "C4", "C5"]
 
 def eligible_rates(rates: pd.DataFrame, product: str) -> pd.DataFrame:
     return rates[rates["產品"] == product].copy().sort_values(["機台"]).reset_index(drop=True)
+
+
+def allowed_machines(value: object) -> list[str]:
+    if value is None or pd.isna(value):
+        return []
+    machines = []
+    for item in re.split(r"[,，/、;；\s]+", str(value).upper().strip()):
+        cleaned = item.strip()
+        if cleaned:
+            machines.append(cleaned)
+    return machines
 
 
 def _blocked_windows(unavailability: pd.DataFrame | None, machine: str) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
@@ -90,6 +102,9 @@ def _pick_machine(
     candidates["projected_end"] = projected_ends
     candidates["projected_tardiness"] = projected_tardiness
     candidates["_can_fit"] = candidates["ready_time"] < pd.Timestamp.max
+    schedulable = candidates[candidates["_can_fit"]].copy()
+    if not schedulable.empty:
+        candidates = schedulable
     if len(candidates) == 1:
         return candidates.iloc[0]
     if strategy_code == "changeover":
@@ -149,6 +164,32 @@ def schedule(
 
     for sequence, (_, order) in enumerate(sorted_orders.iterrows(), start=1):
         options = eligible_rates(rates, order["產品"])
+        allowed = allowed_machines(order.get("允許機台"))
+        if allowed:
+            options = options[options["機台"].astype(str).str.upper().isin(allowed)].copy()
+        if options.empty:
+            rows.append(
+                {
+                    "排程順序": sequence,
+                    "工單編號": order["工單編號"],
+                    "產品": order["產品"],
+                    "數量": float(order["數量"]),
+                    "單位": order.get("單位", "PCS"),
+                    "優先級": order["優先級"],
+                    "交期": order["交期"],
+                    "指派機台": "無合格機台",
+                    "產速": 0.0,
+                    "加工時間（小時）": 0.0,
+                    "換模時間（小時）": 0.0,
+                    "開始時間": pd.NaT,
+                    "結束時間": pd.NaT,
+                    "狀態": "無合格機台",
+                    "是否遲交": False,
+                    "遲交時間（小時）": 0.0,
+                    "等待時間（小時）": 0.0,
+                }
+            )
+            continue
         override = manual_machine_overrides.get(str(order["工單編號"]))
         if override and override in set(options["機台"]):
             chosen = options[options["機台"] == override].iloc[0].copy()

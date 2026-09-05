@@ -54,6 +54,8 @@ def init_state() -> None:
         "custom_end": pd.Timestamp("2026-09-04 08:00"),
         "changeover_minutes": 30,
         "unavailability": pd.DataFrame(columns=["機台", "不可用開始", "不可用結束", "原因"]),
+        "exclude_weekends": False,
+        "non_working_dates": "",
         "last_version": None,
     }
     for key, value in defaults.items():
@@ -108,6 +110,43 @@ def datetime_fields(label: str, value: pd.Timestamp, key: str) -> pd.Timestamp:
     return timestamp
 
 
+def parse_non_working_dates(text: str) -> list[pd.Timestamp]:
+    dates: list[pd.Timestamp] = []
+    for item in str(text).replace(",", "\n").replace("，", "\n").splitlines():
+        item = item.strip()
+        if not item:
+            continue
+        parsed = pd.to_datetime(item, errors="coerce")
+        if pd.notna(parsed):
+            dates.append(pd.Timestamp(parsed).normalize())
+    return sorted(set(dates))
+
+
+def calendar_unavailability(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    days: set[pd.Timestamp] = set(parse_non_working_dates(st.session_state.non_working_dates))
+    if st.session_state.exclude_weekends:
+        for day in pd.date_range(pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize(), freq="D"):
+            if day.weekday() >= 5:
+                days.add(pd.Timestamp(day).normalize())
+    rows = []
+    for day in sorted(days):
+        block_start = max(day, pd.Timestamp(start))
+        block_end = min(day + pd.Timedelta(days=1), pd.Timestamp(end))
+        if block_start >= block_end:
+            continue
+        for machine in MACHINES:
+            rows.append({"機台": machine, "不可用開始": block_start, "不可用結束": block_end, "原因": "週末/指定休假日"})
+    return pd.DataFrame(rows, columns=["機台", "不可用開始", "不可用結束", "原因"])
+
+
+def effective_unavailability(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataFrame:
+    frames = [st.session_state.unavailability, calendar_unavailability(start, end)]
+    frames = [frame for frame in frames if frame is not None and not frame.empty]
+    if not frames:
+        return pd.DataFrame(columns=["機台", "不可用開始", "不可用結束", "原因"])
+    return pd.concat(frames, ignore_index=True)
+
+
 def load_demo() -> None:
     write_demo_excel(DEMO_EXCEL_PATH)
     st.session_state.workbook = load_workbook(DEMO_EXCEL_PATH)
@@ -128,6 +167,7 @@ def run_schedule(reason: str = "INITIAL") -> None:
         st.error("排程開始時間必須早於排程結束時間。")
         return
     data = with_horizon_settings(data, start, end)
+    blocked_periods = effective_unavailability(start, end)
     try:
         result = schedule(
             data,
@@ -135,7 +175,7 @@ def run_schedule(reason: str = "INITIAL") -> None:
             horizon_start=start,
             horizon_end=end,
             default_changeover_minutes=st.session_state.changeover_minutes,
-            unavailability=st.session_state.unavailability,
+            unavailability=blocked_periods,
         )
         kpis = calculate_kpis(result, data["排程基本設定"])
         st.session_state.schedule_df = result
@@ -153,12 +193,14 @@ def run_schedule(reason: str = "INITIAL") -> None:
             reason,
             upload_filename=st.session_state.upload_filename,
             input_source="內建標準資料" if st.session_state.upload_filename == DEMO_EXCEL_PATH.name else "Uploaded Excel",
-            unavailability=st.session_state.unavailability,
+            unavailability=blocked_periods,
             default_changeover_minutes=st.session_state.changeover_minutes,
             rule_configuration={
                 "strategy_code": st.session_state.selected_strategy,
                 "horizon_mode": st.session_state.horizon_mode,
                 "default_changeover_minutes": st.session_state.changeover_minutes,
+                "exclude_weekends": st.session_state.exclude_weekends,
+                "non_working_dates": [day.strftime("%Y-%m-%d") for day in parse_non_working_dates(st.session_state.non_working_dates)],
             },
         )
         st.success("排程完成")
@@ -166,13 +208,24 @@ def run_schedule(reason: str = "INITIAL") -> None:
         st.error("排程時發生問題，請確認 Excel 欄位、產速與排程期間設定。")
 
 
-def add_urgent_order(order_id: str, product: str, qty: float, due: pd.Timestamp, priority: str) -> bool:
+def add_urgent_order(order_id: str, product: str, qty: float, due: pd.Timestamp, priority: str, allowed: list[str] | None = None) -> bool:
     data = valid_data()
     if data is None:
         st.error("請先載入或上傳有效 Excel。")
         return False
     new_row = pd.DataFrame(
-        [{"工單編號": order_id, "產品": product, "數量": qty, "單位": "PCS", "優先級": priority, "交期": due, "_原始順序": len(data["待排工單"]) + 1}]
+        [
+            {
+                "工單編號": order_id,
+                "產品": product,
+                "數量": qty,
+                "單位": "PCS",
+                "優先級": priority,
+                "交期": due,
+                "允許機台": ",".join(allowed or []),
+                "_原始順序": len(data["待排工單"]) + 1,
+            }
+        ]
     )
     updated = {name: frame.copy() for name, frame in data.items()}
     updated["待排工單"] = pd.concat([updated["待排工單"], new_row], ignore_index=True)
@@ -234,8 +287,9 @@ with quick[0]:
         urgent_product = st.text_input("產品", value="SIM-C2-A")
         urgent_qty = st.number_input("數量", min_value=1.0, value=120.0)
         urgent_due = datetime_fields("交期", pd.Timestamp("2026-09-03 18:00"), "urgent_due")
+        urgent_allowed = st.multiselect("限定機台（不選 = 依產品產速表）", MACHINES, default=[])
         if st.button("重新排程", key="urgent_replan", use_container_width=True):
-            if add_urgent_order(urgent_id, urgent_product, urgent_qty, pd.Timestamp(urgent_due), "急單"):
+            if add_urgent_order(urgent_id, urgent_product, urgent_qty, pd.Timestamp(urgent_due), "急單", urgent_allowed):
                 run_schedule("URGENT_ORDER")
                 st.success("急單重排完成")
 with quick[1]:
@@ -274,6 +328,9 @@ with st.expander("基本設定", expanded=False):
         st.caption("載入資料後可查看與編輯基本設定。")
     else:
         st.session_state.changeover_minutes = st.number_input("預設換模時間（分鐘）", min_value=0, value=int(st.session_state.changeover_minutes), step=5)
+        st.session_state.exclude_weekends = st.checkbox("週末不排程（星期六、星期日）", value=bool(st.session_state.exclude_weekends))
+        st.session_state.non_working_dates = st.text_area("指定日期不排程（國定假日 / 盤點 / 全廠休假）", value=st.session_state.non_working_dates, placeholder="例如：\n2026-09-28\n2026-10-10")
+        st.caption("若待排工單有 `允許機台` 欄位，可填 C5 或 C4,C5；空白代表依產品機台產速表自動選機台。")
         edited_rates = st.data_editor(data["產品機台產速"], use_container_width=True, num_rows="dynamic")
         if st.button("保存產品 / 機台產速"):
             updated = {name: frame.copy() for name, frame in data.items()}
@@ -294,7 +351,15 @@ if st.session_state.schedule_df is not None and st.session_state.kpis is not Non
         st.dataframe(unscheduled, use_container_width=True)
     st.subheader("排程摘要")
     st.dataframe(st.session_state.schedule_df, use_container_width=True)
-    st.session_state.comparison_df, _ = compare_strategies(st.session_state.workbook, MAIN_STRATEGIES)
+    blocked_periods = effective_unavailability(start, end)
+    st.session_state.comparison_df, _ = compare_strategies(
+        st.session_state.workbook,
+        MAIN_STRATEGIES,
+        horizon_start=start,
+        horizon_end=end,
+        default_changeover_minutes=st.session_state.changeover_minutes,
+        unavailability=blocked_periods,
+    )
     best, _ = recommend_strategy(st.session_state.comparison_df)
     st.success(f"推薦方案：{best['策略']}")
     st.dataframe(st.session_state.comparison_df.drop(columns=["策略代碼"], errors="ignore"), use_container_width=True)

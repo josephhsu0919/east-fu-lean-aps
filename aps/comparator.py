@@ -24,11 +24,25 @@ COMPARE_COLUMNS = [
 ]
 
 
-def compare_strategies(workbook: dict[str, pd.DataFrame], strategy_codes: list[str]) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+def compare_strategies(
+    workbook: dict[str, pd.DataFrame],
+    strategy_codes: list[str],
+    horizon_start: pd.Timestamp | None = None,
+    horizon_end: pd.Timestamp | None = None,
+    default_changeover_minutes: float = 30,
+    unavailability: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     schedules: dict[str, pd.DataFrame] = {}
     rows = []
     for code in strategy_codes:
-        result = schedule(workbook, code)
+        result = schedule(
+            workbook,
+            code,
+            horizon_start=horizon_start,
+            horizon_end=horizon_end,
+            default_changeover_minutes=default_changeover_minutes,
+            unavailability=unavailability,
+        )
         schedules[code] = result
         kpis = calculate_kpis(result, workbook["排程基本設定"])
         rows.append(

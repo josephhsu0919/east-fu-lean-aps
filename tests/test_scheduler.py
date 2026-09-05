@@ -144,3 +144,37 @@ def test_alternative_eligible_resource_can_be_selected():
     result = schedule(data, "short_wait", unavailability=downtime)
     row = result[result["產品"] == "SIM-MULTI-C"].iloc[0]
     assert row["指派機台"] == "C2"
+
+
+def test_order_allowed_machines_restrict_assignment():
+    data = _data()
+    data["待排工單"].loc[data["待排工單"]["工單編號"] == "UAT-260903-009", "允許機台"] = "C5"
+    result = schedule(data, "short_wait")
+    row = result[result["工單編號"] == "UAT-260903-009"].iloc[0]
+    assert row["指派機台"] == "C5"
+
+
+def test_order_allowed_machines_reports_no_eligible_machine():
+    data = _data()
+    data["待排工單"].loc[data["待排工單"]["工單編號"] == "UAT-260903-009", "允許機台"] = "C4"
+    result = schedule(data, "short_wait")
+    row = result[result["工單編號"] == "UAT-260903-009"].iloc[0]
+    assert row["指派機台"] == "無合格機台"
+    assert row["狀態"] == "無合格機台"
+
+
+def test_weekend_or_holiday_unavailability_blocks_all_machines():
+    import pandas as pd
+
+    data = _data()
+    data["機台可用時間"]["可用結束"] = pd.Timestamp("2026-09-08 08:00")
+    downtime = pd.DataFrame(
+        [
+            {"機台": machine, "不可用開始": pd.Timestamp("2026-09-05 00:00"), "不可用結束": pd.Timestamp("2026-09-07 00:00"), "原因": "weekend"}
+            for machine in ["C2", "C4", "C5"]
+        ]
+    )
+    result = schedule(data, "fifo", horizon_start="2026-09-04 08:00", horizon_end="2026-09-08 08:00", unavailability=downtime)
+    scheduled = result[result["狀態"] == "scheduled"]
+    for _, row in scheduled.iterrows():
+        assert row["結束時間"] <= pd.Timestamp("2026-09-05 00:00") or row["開始時間"] >= pd.Timestamp("2026-09-07 00:00")
