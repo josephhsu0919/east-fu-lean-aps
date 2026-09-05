@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import date, datetime, time
+from io import BytesIO
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pandas as pd
 import streamlit as st
 
 from aps.comparator import compare_strategies, recommend_strategy
-from aps.exporter import export_schedule_excel, export_schedule_package_zip
+from aps.exporter import export_schedule_excel
 from aps.history import create_schedule_version, load_history, version_orders_frame, version_schedule_frame
 from aps.metrics import calculate_kpis, kpis_to_frame
 from aps.parser import get_schedule_window, load_workbook
@@ -145,6 +147,14 @@ def effective_unavailability(start: pd.Timestamp, end: pd.Timestamp) -> pd.DataF
     if not frames:
         return pd.DataFrame(columns=["機台", "不可用開始", "不可用結束", "原因"])
     return pd.concat(frames, ignore_index=True)
+
+
+def export_schedule_package_zip(excel_bytes: bytes, gantt_html: str) -> bytes:
+    output = BytesIO()
+    with ZipFile(output, mode="w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("EastFu_APS_Result.xlsx", excel_bytes)
+        archive.writestr("EastFu_APS_Gantt.html", gantt_html.encode("utf-8"))
+    return output.getvalue()
 
 
 def load_demo() -> None:
