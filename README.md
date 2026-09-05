@@ -28,8 +28,9 @@ data/EastFu_Lean_APS_Demo.xlsx
 1. 上傳訂單 Excel
 2. 選擇排程期間
 3. 選擇排程策略
-4. 按「開始排程」
-5. 查看甘特圖與 KPI
+4. 確認基本設定
+5. 按「確認設定並開始排程」
+6. 查看甘特圖與 KPI
 
 ## Excel 工作表
 
@@ -37,6 +38,25 @@ data/EastFu_Lean_APS_Demo.xlsx
 - 產品機台產速
 - 機台可用時間
 - 排程基本設定
+- 機台初始狀態
+- 換模時間
+
+## 換模時間設定
+
+在 `產品機台產速` 中維護每個產品的 `換模群組`。同一產品若可在多台機台生產，請依產品與機台拆成多列，並分別填產速與換模群組。
+
+在 `換模時間` 中維護群組對群組的換模分鐘數：
+
+| 來源換模群組 | 目標換模群組 | 換模時間_分鐘 |
+|---|---|---:|
+| G1 | G2 | 30 |
+| G2 | G1 | 45 |
+
+排程規則：
+
+1. 同一換模群組接續生產，換模時間為 0。
+2. 若 `換模時間` 有設定來源與目標群組，就使用該分鐘數。
+3. 若沒有設定，就使用畫面上的 `預設換模時間（分鐘）`。
 
 ## 支援策略
 
@@ -54,7 +74,7 @@ data/EastFu_Lean_APS_Demo.xlsx
 - 欄位 alias normalization：支援工單編號 / WO / work_order、產品編號 / Product、需求日期 / Due Date、Quantity、Priority 等欄名。
 - Friendly validation：缺欄位時顯示中文訊息與偵測到的欄位，不暴露 KeyError 或 traceback。
 - Planning horizon：支援 24 小時、48 小時、72 小時、一週、自訂開始 / 結束。
-- Changeover：預設不同產品換模時間會影響開始時間、makespan、tardiness、換模次數。
+- Changeover：支援群組對群組換模時間表，未設定時使用預設換模時間，會影響開始時間、makespan、tardiness、換模次數。
 - 今日異常：機台停機期間不可排入生產。
 - 急單：可新增急單並建立新 schedule version。
 - 歷史排程：每次排程保存到 `data/schedule_history.json`，重啟後仍可查看版本、訂單、甘特圖與 KPI。

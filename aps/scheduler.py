@@ -63,6 +63,35 @@ def _next_available_start(candidate_start: pd.Timestamp, duration_hours: float, 
     return current if current + duration <= horizon_end else None
 
 
+def _rate_changeover_group(candidate: pd.Series, order: pd.Series) -> str:
+    group = candidate.get("換模群組", order.get("換模群組", order["產品"]))
+    if group is None or pd.isna(group) or str(group).strip() == "":
+        return str(order["產品"])
+    return str(group).strip()
+
+
+def _changeover_minutes(
+    from_group: str | None,
+    to_group: str,
+    changeover_lookup: dict[tuple[str, str], float],
+    default_changeover_minutes: float,
+) -> float:
+    if from_group is None or from_group == to_group:
+        return 0.0
+    return float(changeover_lookup.get((from_group, to_group), default_changeover_minutes))
+
+
+def _changeover_lookup(changeover_df: pd.DataFrame) -> dict[tuple[str, str], float]:
+    if changeover_df.empty or not {"來源換模群組", "目標換模群組", "換模時間_分鐘"}.issubset(changeover_df.columns):
+        return {}
+    lookup: dict[tuple[str, str], float] = {}
+    for _, row in changeover_df.iterrows():
+        if pd.isna(row["來源換模群組"]) or pd.isna(row["目標換模群組"]) or pd.isna(row["換模時間_分鐘"]):
+            continue
+        lookup[(str(row["來源換模群組"]).strip(), str(row["目標換模群組"]).strip())] = float(row["換模時間_分鐘"])
+    return lookup
+
+
 def _pick_machine(
     row: pd.Series,
     product_rates: pd.DataFrame,
@@ -70,8 +99,9 @@ def _pick_machine(
     machine_load: dict[str, float],
     strategy_code: str,
     horizon_end: pd.Timestamp,
-    machine_last_product: dict[str, str | None],
+    machine_last_group: dict[str, str | None],
     default_changeover_minutes: float,
+    changeover_lookup: dict[tuple[str, str], float],
     block_map: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]],
 ) -> pd.Series:
     candidates = product_rates.copy()
@@ -84,7 +114,8 @@ def _pick_machine(
     projected_tardiness = []
     for _, candidate in candidates.iterrows():
         machine = str(candidate["機台"])
-        changeover = 0.0 if machine_last_product[machine] in {None, row["產品"]} else default_changeover_minutes / 60
+        target_group = _rate_changeover_group(candidate, row)
+        changeover = _changeover_minutes(machine_last_group[machine], target_group, changeover_lookup, default_changeover_minutes) / 60
         raw_start = machine_ready[machine] + pd.to_timedelta(changeover, unit="h")
         available_start = _next_available_start(raw_start, float(candidate["duration_hours"]), horizon_end, block_map.get(machine, []))
         starts.append(available_start if available_start is not None else pd.Timestamp.max)
@@ -139,9 +170,12 @@ def schedule(
     rates = workbook["產品機台產速"].copy()
     settings = workbook["排程基本設定"]
     availability = workbook.get("機台可用時間", pd.DataFrame()).copy()
+    changeover_df = workbook.get("換模時間", pd.DataFrame()).copy()
     orders["交期"] = pd.to_datetime(orders["交期"], errors="coerce")
     orders["數量"] = pd.to_numeric(orders["數量"], errors="coerce")
     rates["產速_PCS_per_hr"] = pd.to_numeric(rates["產速_PCS_per_hr"], errors="coerce")
+    if not changeover_df.empty and "換模時間_分鐘" in changeover_df.columns:
+        changeover_df["換模時間_分鐘"] = pd.to_numeric(changeover_df["換模時間_分鐘"], errors="coerce")
     if not availability.empty:
         availability["可用開始"] = pd.to_datetime(availability["可用開始"], errors="coerce")
         availability["可用結束"] = pd.to_datetime(availability["可用結束"], errors="coerce")
@@ -149,12 +183,15 @@ def schedule(
     machine_ready = {machine: start for machine in MACHINES}
     machine_load = {machine: 0.0 for machine in MACHINES}
     initial_state = workbook.get("機台初始狀態", pd.DataFrame()).copy()
-    machine_last_product: dict[str, str | None] = {machine: None for machine in MACHINES}
+    product_groups = rates.dropna(subset=["產品"]).drop_duplicates("產品").set_index("產品")["換模群組"].to_dict() if "換模群組" in rates.columns else {}
+    changeover_lookup = _changeover_lookup(changeover_df)
+    machine_last_group: dict[str, str | None] = {machine: None for machine in MACHINES}
     if not initial_state.empty and {"機台", "初始產品"}.issubset(initial_state.columns):
         for _, row in initial_state.iterrows():
             machine = str(row["機台"])
-            if machine in machine_last_product and pd.notna(row["初始產品"]):
-                machine_last_product[machine] = str(row["初始產品"])
+            if machine in machine_last_group and pd.notna(row["初始產品"]):
+                initial_product = str(row["初始產品"])
+                machine_last_group[machine] = str(product_groups.get(initial_product, initial_product))
     block_map = {
         machine: _calendar_blocks(availability, machine, start, horizon_end) + _blocked_windows(unavailability, machine)
         for machine in MACHINES
@@ -194,12 +231,13 @@ def schedule(
         if override and override in set(options["機台"]):
             chosen = options[options["機台"] == override].iloc[0].copy()
             chosen["duration_hours"] = order["數量"] / chosen["產速_PCS_per_hr"]
-            changeover = 0.0 if machine_last_product[override] in {None, order["產品"]} else default_changeover_minutes / 60
+            target_group = _rate_changeover_group(chosen, order)
+            changeover = _changeover_minutes(machine_last_group[override], target_group, changeover_lookup, default_changeover_minutes) / 60
             raw_start = machine_ready[override] + pd.to_timedelta(changeover, unit="h")
             chosen["ready_time"] = _next_available_start(raw_start, float(chosen["duration_hours"]), horizon_end, block_map.get(override, [])) or pd.Timestamp.max
             chosen["changeover_hours"] = changeover
         else:
-            chosen = _pick_machine(order, options, machine_ready, machine_load, strategy_code, horizon_end, machine_last_product, default_changeover_minutes, block_map)
+            chosen = _pick_machine(order, options, machine_ready, machine_load, strategy_code, horizon_end, machine_last_group, default_changeover_minutes, changeover_lookup, block_map)
         machine = str(chosen["機台"])
         rate = float(chosen["產速_PCS_per_hr"])
         duration_hours = float(order["數量"]) / rate
@@ -212,7 +250,7 @@ def schedule(
         if can_schedule:
             machine_ready[machine] = item_end
             machine_load[machine] += duration_hours + changeover_hours
-            machine_last_product[machine] = str(order["產品"])
+            machine_last_group[machine] = _rate_changeover_group(chosen, order)
         rows.append(
             {
                 "排程順序": sequence,

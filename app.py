@@ -337,12 +337,15 @@ with st.expander("基本設定", expanded=data is not None):
         st.session_state.non_working_dates = st.text_area("指定日期不排程（國定假日 / 盤點 / 全廠休假）", value=st.session_state.non_working_dates, placeholder="例如：\n2026-09-28\n2026-10-10")
         st.caption("若待排工單有 `允許機台` 欄位，可填 C5 或 C4,C5；空白代表依產品機台產速表自動選機台。")
         edited_rates = st.data_editor(data["產品機台產速"], use_container_width=True, num_rows="dynamic")
-        if st.button("保存產品 / 機台產速"):
+        changeover_source = data.get("換模時間", pd.DataFrame(columns=["來源換模群組", "目標換模群組", "換模時間_分鐘"]))
+        edited_changeovers = st.data_editor(changeover_source, use_container_width=True, num_rows="dynamic")
+        if st.button("保存產品 / 機台產速 / 換模時間"):
             updated = {name: frame.copy() for name, frame in data.items()}
             updated["產品機台產速"] = edited_rates
+            updated["換模時間"] = edited_changeovers
             st.session_state.workbook = updated
             st.session_state.validation = validate_workbook(updated)
-            st.success("產速設定已保存")
+            st.success("產品機台產速與換模時間已保存")
 
 action_cols = st.columns([2, 1])
 with action_cols[1]:

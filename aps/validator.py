@@ -78,6 +78,16 @@ def validate_workbook(workbook: dict[str, pd.DataFrame]) -> tuple[bool, list[str
         bad_units = rates[~rates["產速單位"].fillna("PCS/hr").astype(str).str.lower().isin(["pcs/hr", "pcs per hr", "pcs_per_hr"])]
         for _, row in bad_units.iterrows():
             issues.append(f"產速單位目前僅支援 PCS/hr：{row.get('產品', '未知產品')} / {row.get('機台', '未知機台')}")
+    if "換模時間" in data:
+        changeovers = data["換模時間"]
+        required_changeover_cols = ["來源換模群組", "目標換模群組", "換模時間_分鐘"]
+        missing_changeover_cols = [col for col in required_changeover_cols if col not in changeovers.columns]
+        for col in missing_changeover_cols:
+            issues.append(f"換模時間缺少必要欄位：{col}。目前偵測到欄位：{detected_columns(changeovers)}")
+        if not missing_changeover_cols:
+            bad_changeovers = changeovers[changeovers["換模時間_分鐘"].isna() | (changeovers["換模時間_分鐘"] < 0)]
+            for _, row in bad_changeovers.iterrows():
+                issues.append(f"換模時間不可小於 0：{row.get('來源換模群組', '未知群組')} -> {row.get('目標換模群組', '未知群組')}")
     for product in orders["產品"].dropna().astype(str).unique():
         if product not in products_with_rates:
             issues.append(f"產品 {product} 尚未設定機台產速")

@@ -15,17 +15,18 @@ def test_demo_excel_can_be_read():
     assert ok, issues
     assert data is not None
     assert len(data["待排工單"]) == 10
+    assert "換模時間" in data
 
 
 def test_product_machine_rate_mappings_are_correct():
     path = Path("data/EastFu_Lean_APS_Demo.xlsx")
-    if not path.exists():
-        write_demo_excel(path)
+    write_demo_excel(path)
     workbook = load_workbook(path)
     ok, issues, data = validate_workbook(workbook)
     assert ok, issues
     rates = data["產品機台產速"]
     assert len(rates) == 13
+    assert "換模群組" in rates.columns
     assert set(rates.loc[rates["產品"] == "SIM-MULTI-C", "機台"]) == {"C5", "C2"}
     assert rates.loc[(rates["產品"] == "SIM-C2-C") & (rates["機台"] == "C2"), "產速_PCS_per_hr"].iloc[0] == 140
 

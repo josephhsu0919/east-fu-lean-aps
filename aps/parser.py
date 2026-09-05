@@ -17,6 +17,10 @@ CANONICAL_COLUMNS = {
     "交期": ["交期", "需求日期", "需求時間", "due date", "due_date"],
     "優先級": ["優先級", "優先順序", "工單急迫程度", "priority"],
     "允許機台": ["允許機台", "限定機台", "可排機台", "指定機台", "allowed_machines", "eligible_machines"],
+    "換模群組": ["換模群組", "換線群組", "模具群組", "changeover_group", "setup_group"],
+    "來源換模群組": ["來源換模群組", "前一換模群組", "from_group", "source_group"],
+    "目標換模群組": ["目標換模群組", "下一換模群組", "to_group", "target_group"],
+    "換模時間_分鐘": ["換模時間_分鐘", "換模時間", "換線時間", "setup_minutes", "changeover_minutes"],
     "機台": ["機台", "machine", "resource"],
     "可生產": ["可生產", "eligible", "can_produce"],
     "產速_PCS_per_hr": ["產速_pcs_per_hr", "pcs/hr", "pcs per hr", "rate", "rate_per_hour", "產速", "標準產速", "每小時產量"],
@@ -136,6 +140,11 @@ def normalize_workbook(workbook: dict[str, pd.DataFrame]) -> dict[str, pd.DataFr
         if "產速_PCS_per_hr" in rates.columns:
             rates["產速_PCS_per_hr"] = pd.to_numeric(rates["產速_PCS_per_hr"], errors="coerce")
         normalized["產品機台產速"] = rates
+    if "換模時間" in normalized:
+        changeovers = normalized["換模時間"].copy()
+        if "換模時間_分鐘" in changeovers.columns:
+            changeovers["換模時間_分鐘"] = pd.to_numeric(changeovers["換模時間_分鐘"], errors="coerce")
+        normalized["換模時間"] = changeovers
     if "機台可用時間" in normalized:
         availability = normalized["機台可用時間"]
         if "可用開始" in availability.columns:

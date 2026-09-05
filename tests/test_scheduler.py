@@ -90,6 +90,23 @@ def test_changeover_affects_schedule():
     assert with_changeover["結束時間"].max() >= no_changeover["結束時間"].max()
 
 
+def test_group_changeover_table_overrides_default_minutes():
+    import pandas as pd
+
+    data = _data()
+    data["待排工單"] = pd.DataFrame(
+        [
+            {"工單編號": "A", "產品": "SIM-C2-A", "數量": 120, "單位": "PCS", "優先級": "一般", "交期": "2026-09-04", "_原始順序": 1},
+            {"工單編號": "B", "產品": "SIM-C2-B", "數量": 96, "單位": "PCS", "優先級": "一般", "交期": "2026-09-04", "_原始順序": 2},
+        ]
+    )
+    data["機台初始狀態"] = pd.DataFrame([{"機台": "C2", "初始產品": "SIM-C2-A"}])
+    data["換模時間"] = pd.DataFrame([{"來源換模群組": "C2-A", "目標換模群組": "C2-B", "換模時間_分鐘": 75}])
+    result = schedule(data, "fifo", default_changeover_minutes=30)
+    second = result[result["工單編號"] == "B"].iloc[0]
+    assert second["換模時間（小時）"] == 1.25
+
+
 def test_machine_downtime_blocks_resource():
     import pandas as pd
 
@@ -123,7 +140,7 @@ def test_same_product_changeover_is_zero_and_initial_setup_affects_first_job():
     data["機台初始狀態"].loc[data["機台初始狀態"]["機台"] == "C2", "初始產品"] = "SIM-C2-B"
     changed = schedule(data, "rush_edd", default_changeover_minutes=30)
     first_c2_changed = changed[changed["指派機台"] == "C2"].sort_values("開始時間").iloc[0]
-    assert first_c2_changed["換模時間（小時）"] == 0.5
+    assert first_c2_changed["換模時間（小時）"] == 0.4167
 
 
 def test_no_split_or_preemption_across_downtime():

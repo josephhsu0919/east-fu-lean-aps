@@ -74,7 +74,11 @@ def create_schedule_version(
         "scheduling_rule_name": strategy_name,
         "rule_configuration": rule_configuration or {"strategy_code": strategy_code},
         "reason": reason,
-        "changeover_configuration": {"default_changeover_minutes": default_changeover_minutes, "same_product_minutes": 0},
+        "changeover_configuration": {
+            "default_changeover_minutes": default_changeover_minutes,
+            "same_group_minutes": 0,
+            "changeover_table": _frame_to_records(workbook.get("換模時間", pd.DataFrame())),
+        },
         "machine_initial_state": _frame_to_records(workbook.get("機台初始狀態", pd.DataFrame())),
         "manual_adjustment": manual_adjustment or {},
         "orders": _frame_to_records(workbook["待排工單"]),

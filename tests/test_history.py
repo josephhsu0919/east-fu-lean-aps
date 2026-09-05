@@ -104,3 +104,4 @@ def test_history_snapshot_has_required_reproducible_fields():
         "reason",
     ]:
         assert key in version
+    assert version["changeover_configuration"]["changeover_table"]
