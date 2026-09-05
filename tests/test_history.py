@@ -42,6 +42,13 @@ def test_historical_versions_persist_and_reconstruct_gantt_data():
     assert pd.api.types.is_datetime64_any_dtype(restored["開始時間"])
 
 
+def test_corrupt_history_file_does_not_crash_app():
+    path = Path("tests/.tmp/history_corrupt.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[", encoding="utf-8")
+    assert load_history(path) == []
+
+
 def test_history_is_immutable_after_master_setting_changes():
     path = Path("tests/.tmp/history_immutable.json")
     save_history([], path)

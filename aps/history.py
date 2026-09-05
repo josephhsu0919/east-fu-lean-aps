@@ -30,14 +30,20 @@ def _records_to_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
 def load_history(path: Path = HISTORY_PATH) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            history = json.load(handle)
+    except json.JSONDecodeError:
+        return []
+    return history if isinstance(history, list) else []
 
 
 def save_history(history: list[dict[str, Any]], path: Path = HISTORY_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
+    temp_path = path.with_suffix(f"{path.suffix}.tmp")
+    with temp_path.open("w", encoding="utf-8") as handle:
         json.dump(history, handle, ensure_ascii=False, indent=2)
+    temp_path.replace(path)
 
 
 def next_version_id(history: list[dict[str, Any]]) -> str:
