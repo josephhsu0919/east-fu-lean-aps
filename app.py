@@ -289,10 +289,16 @@ def run_schedule(reason: str = "INITIAL") -> None:
             unavailability=blocked_periods,
         )
         kpis = calculate_kpis(result, data["排程基本設定"])
-        st.session_state.schedule_df = result
-        st.session_state.kpis = kpis
-        st.session_state.workbook = data
-        st.session_state.validation = validate_workbook(data)
+    except Exception as exc:
+        st.error(f"排程計算失敗：{type(exc).__name__}: {exc}")
+        st.caption("請確認產品是否有可用機台產速、排程期間是否足夠、停機/休假是否讓全部候選機台不可用。")
+        return
+
+    st.session_state.schedule_df = result
+    st.session_state.kpis = kpis
+    st.session_state.workbook = data
+    st.session_state.validation = validate_workbook(data)
+    try:
         st.session_state.last_version = create_schedule_version(
             data,
             result,
@@ -320,9 +326,10 @@ def run_schedule(reason: str = "INITIAL") -> None:
                 "non_working_dates": [day.strftime("%Y-%m-%d") for day in parse_non_working_dates(st.session_state.non_working_dates)],
             },
         )
-        st.success("排程完成")
-    except Exception:
-        st.error("排程時發生問題，請確認 Excel 欄位、產速與排程期間設定。")
+    except Exception as exc:
+        st.session_state.last_version = None
+        st.warning(f"排程已完成，但歷史版本暫時無法儲存：{type(exc).__name__}: {exc}")
+    st.success("排程完成")
 
 
 def add_urgent_order(order_id: str, product: str, qty: float, due: pd.Timestamp, priority: str, allowed: list[str] | None = None) -> bool:
