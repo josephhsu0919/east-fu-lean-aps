@@ -24,6 +24,7 @@ STRATEGIES = {
     "short_wait": Strategy("short_wait", "最短等待時間優先", "每張工單選可最早開始的合格機台。"),
     "load_balance": Strategy("load_balance", "機台負載平衡", "多機台產品優先選累積負荷較低的合格機台。"),
     "lean": Strategy("lean", "東福 Lean 綜合排程", "急單與交期優先，資源選擇兼顧等待、遲交與負載平衡。"),
+    "v2_default": Strategy("v2_default", "V2 指定優先 → 完成日 → 減少換模", "指定優先為最高層級，其次完成日，最後在同層級內盡量減少換模。"),
 }
 
 
@@ -34,6 +35,9 @@ def strategy_options() -> dict[str, str]:
 def sort_orders(orders: pd.DataFrame, rates: pd.DataFrame, strategy_code: str) -> pd.DataFrame:
     frame = orders.copy()
     frame["_priority_rank"] = frame["優先級"].map(PRIORITY_RANK).fillna(9)
+    if strategy_code == "v2_default":
+        frame["_manual_priority_rank"] = (~frame.get("指定優先", False).astype(bool)).astype(int)
+        return frame.sort_values(["_manual_priority_rank", "交期", "產品", "工單編號"], kind="mergesort").reset_index(drop=True)
     if strategy_code in {"rush_edd", "lean", "short_wait", "load_balance"}:
         return frame.sort_values(["_priority_rank", "交期", "工單編號"], kind="mergesort").reset_index(drop=True)
     if strategy_code == "changeover":

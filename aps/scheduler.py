@@ -78,7 +78,13 @@ def _changeover_minutes(
 ) -> float:
     if from_group is None or from_group == to_group:
         return 0.0
-    return float(changeover_lookup.get((from_group, to_group), default_changeover_minutes))
+    if (from_group, to_group) in changeover_lookup:
+        return float(changeover_lookup[(from_group, to_group)])
+    if (from_group, "任何") in changeover_lookup:
+        return float(changeover_lookup[(from_group, "任何")])
+    if ("未知", "任何") in changeover_lookup and (not from_group or not to_group):
+        return float(changeover_lookup[("未知", "任何")])
+    return float(default_changeover_minutes)
 
 
 def _changeover_lookup(changeover_df: pd.DataFrame) -> dict[tuple[str, str], float]:
@@ -116,7 +122,11 @@ def _pick_machine(
         machine = str(candidate["機台"])
         target_group = _rate_changeover_group(candidate, row)
         changeover = _changeover_minutes(machine_last_group[machine], target_group, changeover_lookup, default_changeover_minutes) / 60
-        raw_start = machine_ready[machine] + pd.to_timedelta(changeover, unit="h")
+        release_date = pd.to_datetime(row.get("最早可排日"), errors="coerce")
+        feasible_start = machine_ready[machine] + pd.to_timedelta(changeover, unit="h")
+        if pd.notna(release_date):
+            feasible_start = max(feasible_start, pd.Timestamp(release_date))
+        raw_start = feasible_start
         available_start = _next_available_start(raw_start, float(candidate["duration_hours"]), horizon_end, block_map.get(machine, []))
         starts.append(available_start if available_start is not None else pd.Timestamp.max)
         projected_ends.append(
@@ -194,13 +204,59 @@ def schedule(
             if machine in machine_last_group and pd.notna(row["初始產品"]):
                 initial_product = str(row["初始產品"])
                 machine_last_group[machine] = str(product_groups.get(initial_product, initial_product))
+    rows = []
+    initial_wip = workbook.get("期初在製", pd.DataFrame()).copy()
+    if not initial_wip.empty and "機台" in initial_wip.columns:
+        for _, wip in initial_wip.iterrows():
+            machine = str(wip.get("機台", "")).strip()
+            if machine not in machine_ready:
+                continue
+            product = wip.get("產品品號", wip.get("產品", "期初在製"))
+            finish = pd.to_datetime(wip.get("預計完成時間"), errors="coerce")
+            if pd.isna(finish):
+                remaining_qty = pd.to_numeric(pd.Series([wip.get("剩餘數量")]), errors="coerce").iloc[0]
+                rate_rows = rates[(rates["產品"].astype(str) == str(product)) & (rates["機台"].astype(str) == machine)]
+                if pd.notna(remaining_qty) and not rate_rows.empty and float(rate_rows.iloc[0]["產速_PCS_per_hr"]) > 0:
+                    finish = start + pd.to_timedelta(float(remaining_qty) / float(rate_rows.iloc[0]["產速_PCS_per_hr"]), unit="h")
+            if pd.isna(finish):
+                continue
+            finish = max(pd.Timestamp(finish), start)
+            raw_qty = pd.to_numeric(pd.Series([wip.get("剩餘數量", 0)]), errors="coerce").iloc[0]
+            wip_qty = 0.0 if pd.isna(raw_qty) else float(raw_qty)
+            machine_ready[machine] = finish
+            setup_group = wip.get("目前換模群組")
+            if pd.isna(setup_group) or str(setup_group).strip() == "":
+                setup_group = product_groups.get(str(product), str(product))
+            machine_last_group[machine] = str(setup_group)
+            rows.append(
+                {
+                    "排程順序": 0,
+                    "工單編號": wip.get("製令單號", f"{machine}-期初在製"),
+                    "產品": product,
+                    "數量": wip_qty,
+                    "單位": wip.get("單位", "PCS"),
+                    "優先級": "期初在製",
+                    "交期": pd.NaT,
+                    "完成日": pd.NaT,
+                    "最早可排日": pd.NaT,
+                    "指派機台": machine,
+                    "產速": 0.0,
+                    "加工時間（小時）": round((finish - start).total_seconds() / 3600, 4),
+                    "換模時間（小時）": 0.0,
+                    "開始時間": start,
+                    "結束時間": finish,
+                    "狀態": "scheduled",
+                    "是否遲交": False,
+                    "遲交時間（小時）": 0.0,
+                    "等待時間（小時）": 0.0,
+                    "工單類型": "期初在製",
+                }
+            )
     block_map = {
         machine: _calendar_blocks(availability, machine, start, horizon_end) + _blocked_windows(unavailability, machine)
         for machine in MACHINES
     }
     sorted_orders = sort_orders(orders, rates, strategy_code)
-    rows = []
-
     for sequence, (_, order) in enumerate(sorted_orders.iterrows(), start=1):
         options = eligible_rates(rates, order["產品"])
         allowed = allowed_machines(order.get("允許機台"))
@@ -216,6 +272,8 @@ def schedule(
                     "單位": order.get("單位", "PCS"),
                     "優先級": order["優先級"],
                     "交期": order["交期"],
+                    "完成日": order.get("完成日", order["交期"]),
+                    "最早可排日": order.get("最早可排日", pd.NaT),
                     "指派機台": "無合格機台",
                     "產速": 0.0,
                     "加工時間（小時）": 0.0,
@@ -226,6 +284,7 @@ def schedule(
                     "是否遲交": False,
                     "遲交時間（小時）": 0.0,
                     "等待時間（小時）": 0.0,
+                    "工單類型": "本次 APS 新排工單",
                 }
             )
             continue
@@ -236,6 +295,9 @@ def schedule(
             target_group = _rate_changeover_group(chosen, order)
             changeover = _changeover_minutes(machine_last_group[override], target_group, changeover_lookup, default_changeover_minutes) / 60
             raw_start = machine_ready[override] + pd.to_timedelta(changeover, unit="h")
+            release_date = pd.to_datetime(order.get("最早可排日"), errors="coerce")
+            if pd.notna(release_date):
+                raw_start = max(raw_start, pd.Timestamp(release_date))
             chosen["ready_time"] = _next_available_start(raw_start, float(chosen["duration_hours"]), horizon_end, block_map.get(override, [])) or pd.Timestamp.max
             chosen["changeover_hours"] = changeover
         else:
@@ -263,6 +325,8 @@ def schedule(
                 "單位": order.get("單位", "PCS"),
                 "優先級": order["優先級"],
                 "交期": order["交期"],
+                "完成日": order.get("完成日", order["交期"]),
+                "最早可排日": order.get("最早可排日", pd.NaT),
                 "指派機台": machine,
                 "產速": rate,
                 "加工時間（小時）": round(duration_hours, 4),
@@ -273,9 +337,10 @@ def schedule(
                 "是否遲交": bool(can_schedule and item_end > order["交期"]),
                 "遲交時間（小時）": round(tardiness_hours, 4),
                 "等待時間（小時）": round(wait_hours, 4),
+                "工單類型": "本次 APS 新排工單",
             }
         )
     result = pd.DataFrame(rows)
     if not result.empty:
-        result["數量"] = result["數量"].apply(lambda v: int(v) if math.isclose(v, int(v)) else v)
+        result["數量"] = result["數量"].apply(lambda v: v if pd.isna(v) else int(v) if math.isclose(v, int(v)) else v)
     return result

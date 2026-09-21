@@ -15,10 +15,12 @@ from aps.history import create_schedule_version, load_history, version_orders_fr
 from aps.manual import answer_from_manual, manual_text
 from aps.metrics import calculate_kpis, kpis_to_frame
 from aps.parser import clean_label, get_schedule_window, load_workbook
+from aps.project_store import frame_to_records, list_projects, load_project, records_to_frame, save_project
 from aps.sample_data import write_demo_excel
 from aps.scheduler import MACHINES, schedule
 from aps.strategies import STRATEGIES
 from aps.validator import validate_workbook
+from aps.v2_adapter import build_scheduler_workbook, load_east_fu_erp_orders, load_v2_master_data, validate_v2_orders
 from ui.charts import comparison_bar
 from ui.gantt import make_gantt
 
@@ -71,6 +73,16 @@ def init_state() -> None:
         "non_working_dates": "",
         "assistant_question": "",
         "last_version": None,
+        "v2_master_data": None,
+        "v2_orders": None,
+        "v2_orders_validated": None,
+        "v2_import_summary": None,
+        "v2_header_row": None,
+        "v2_schedule_df": None,
+        "v2_kpis": None,
+        "v2_workbook": None,
+        "v2_erp_filename": "",
+        "v2_project_name": "2026W39_ProductionSchedule",
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -317,9 +329,171 @@ def add_urgent_order(order_id: str, product: str, qty: float, due: pd.Timestamp,
     return st.session_state.validation[0]
 
 
+def v2_machine_options() -> list[str]:
+    master = st.session_state.v2_master_data
+    if not master or master.get("機台資料", pd.DataFrame()).empty:
+        return MACHINES
+    machines = master["機台資料"]["機台"].dropna().astype(str).tolist()
+    return machines or MACHINES
+
+
+def run_v2_schedule(orders: pd.DataFrame, schedule_start: pd.Timestamp, horizon_end: pd.Timestamp) -> None:
+    master = st.session_state.v2_master_data
+    if not master:
+        st.error("請先載入 V2 Master Data。")
+        return
+    summary, validated = validate_v2_orders(orders, master)
+    st.session_state.v2_import_summary = summary
+    st.session_state.v2_orders_validated = validated
+    if summary.issue_rows:
+        st.error("仍有工單需要修正，請先處理問題列再排程。")
+        return
+    workbook = build_scheduler_workbook(validated, master, schedule_start, horizon_end)
+    selected_machines = st.session_state.get("v2_selected_machines", v2_machine_options())
+    workbook["產品機台產速"] = workbook["產品機台產速"][workbook["產品機台產速"]["機台"].astype(str).isin(selected_machines)].copy()
+    try:
+        result = schedule(
+            workbook,
+            "v2_default",
+            horizon_start=schedule_start,
+            horizon_end=horizon_end,
+            default_changeover_minutes=45,
+        )
+        kpis = calculate_kpis(result, workbook["排程基本設定"])
+    except Exception as exc:
+        st.error(f"V2 排程失敗：{type(exc).__name__}: {exc}")
+        return
+    st.session_state.v2_workbook = workbook
+    st.session_state.v2_schedule_df = result
+    st.session_state.v2_kpis = kpis
+    st.session_state.schedule_df = result
+    st.session_state.kpis = kpis
+    st.session_state.workbook = workbook
+    st.session_state.validation = validate_workbook(workbook)
+    st.success("V2 排程完成")
+
+
 init_state()
-st.title("東福精實生產排程系統")
-st.caption("Excel 驅動的 Lean APS 排程與決策支援工具")
+st.title("East Fu APS Lite V2")
+st.caption("ERP Excel → Upload → Confirm → Schedule → Review → Save")
+
+with st.container(border=True):
+    st.subheader("V2 工作區")
+    master_file = st.file_uploader("1. 載入 V2 Master Data / 生產設定", type=["xlsx"], key="v2_master_upload")
+    if master_file is not None:
+        try:
+            st.session_state.v2_master_data = load_v2_master_data(master_file)
+            st.success("V2 Master Data 已載入")
+        except Exception as exc:
+            st.error(f"Master Data 無法讀取：{type(exc).__name__}: {exc}")
+
+    if st.session_state.v2_master_data:
+        master = st.session_state.v2_master_data
+        master_tabs = st.tabs(["產品主檔", "產品機台產速", "機台資料", "換模設定", "期初在製"])
+        with master_tabs[0]:
+            st.dataframe(master["產品主檔"], use_container_width=True, height=180)
+        with master_tabs[1]:
+            st.caption("若 Master Data 產速尚未填寫，可先在這裡補上後再排程。")
+            master["產品機台產速"] = st.data_editor(master["產品機台產速"], use_container_width=True, num_rows="dynamic", key="v2_rates_editor")
+        with master_tabs[2]:
+            st.dataframe(master["機台資料"], use_container_width=True, height=180)
+        with master_tabs[3]:
+            master["換模設定"] = st.data_editor(master["換模設定"], use_container_width=True, num_rows="dynamic", key="v2_setup_editor")
+        with master_tabs[4]:
+            master["期初在製"] = st.data_editor(master["期初在製"], use_container_width=True, num_rows="dynamic", key="v2_wip_editor")
+
+    erp_file = st.file_uploader("2. 上傳 East Fu ERP 製令 Excel", type=["xlsx"], key="v2_erp_upload")
+    if erp_file is not None:
+        try:
+            orders, header_row = load_east_fu_erp_orders(erp_file, erp_file.name)
+            st.session_state.v2_orders = orders
+            st.session_state.v2_erp_filename = erp_file.name
+            st.session_state.v2_header_row = header_row
+            st.success(f"ERP 已匯入：偵測標題列第 {header_row} 列，共 {len(orders)} 筆")
+        except Exception as exc:
+            st.error(f"ERP 檔無法匯入：{type(exc).__name__}: {exc}")
+
+    if st.session_state.v2_orders is not None:
+        orders = st.session_state.v2_orders.copy()
+        suggested = orders["suggested_completion_date"].dropna()
+        default_completion = pd.Timestamp(suggested.iloc[0]).date() if not suggested.empty else pd.Timestamp.now().date()
+        cols = st.columns(3)
+        completion_date = cols[0].date_input("確認完成日", value=default_completion, key="v2_completion_date")
+        st.session_state.v2_selected_machines = cols[1].multiselect("本次排程機台", v2_machine_options(), default=v2_machine_options())
+        schedule_start = datetime_fields("V2 排程開始", pd.Timestamp(st.session_state.schedule_start), "v2_schedule_start")
+        horizon_hours = cols[2].selectbox("V2 排程期間", [24, 48, 72, 168], index=1, format_func=lambda h: f"{h} 小時" if h < 168 else "一週")
+        orders["completion_date"] = pd.Timestamp(completion_date)
+        editable_cols = [
+            "manual_priority",
+            "work_order_id",
+            "product_id",
+            "product_name",
+            "specification",
+            "quantity",
+            "unit",
+            "release_date",
+            "completion_date",
+            "customs_closing_date",
+            "customer_order_no",
+            "customer_name",
+        ]
+        edited_orders = st.data_editor(orders[editable_cols], use_container_width=True, num_rows="dynamic", key="v2_orders_editor")
+        orders.update(edited_orders)
+        if st.session_state.v2_master_data:
+            summary, validated = validate_v2_orders(orders, st.session_state.v2_master_data)
+            st.session_state.v2_import_summary = summary
+            st.session_state.v2_orders_validated = validated
+            st.info(f"Imported orders: {summary.total_rows}；Ready for scheduling: {summary.ready_rows}；Need correction/mapping: {summary.issue_rows}")
+            if summary.issues:
+                st.warning("；".join(summary.issues))
+            problem_rows = validated[validated["問題"] != ""]
+            if not problem_rows.empty:
+                st.dataframe(problem_rows, use_container_width=True, height=220)
+            run_disabled = summary.issue_rows > 0 or not st.session_state.v2_selected_machines
+            if st.button("3. 使用 V2 規則開始排程", type="primary", disabled=run_disabled, use_container_width=True):
+                run_v2_schedule(validated, pd.Timestamp(schedule_start), pd.Timestamp(schedule_start) + pd.to_timedelta(int(horizon_hours), unit="h"))
+
+    if st.session_state.v2_schedule_df is not None and st.session_state.v2_kpis is not None and st.session_state.v2_workbook is not None:
+        start, end, _ = get_schedule_window(st.session_state.v2_workbook["排程基本設定"])
+        st.subheader("V2 甘特圖")
+        st.plotly_chart(make_gantt(st.session_state.v2_schedule_df, start, end), use_container_width=True)
+        st.subheader("V2 KPI")
+        render_kpis(st.session_state.v2_kpis)
+        st.dataframe(st.session_state.v2_schedule_df, use_container_width=True)
+        save_cols = st.columns([2, 1, 1])
+        st.session_state.v2_project_name = save_cols[0].text_input("排程專案名稱", value=st.session_state.v2_project_name)
+        payload = {
+            "erp_filename": st.session_state.v2_erp_filename,
+            "orders": frame_to_records(st.session_state.v2_orders_validated),
+            "schedule": frame_to_records(st.session_state.v2_schedule_df),
+            "kpis": st.session_state.v2_kpis,
+            "workbook_orders": frame_to_records(st.session_state.v2_workbook["待排工單"]),
+            "rates": frame_to_records(st.session_state.v2_workbook["產品機台產速"]),
+            "settings": frame_to_records(st.session_state.v2_workbook["排程基本設定"]),
+        }
+        if save_cols[1].button("Save", use_container_width=True):
+            path = save_project(st.session_state.v2_project_name, payload, save_as=False)
+            st.success(f"已儲存：{path.name}")
+        if save_cols[2].button("Save As", use_container_width=True):
+            path = save_project(st.session_state.v2_project_name, payload, save_as=True)
+            st.success(f"已另存版本：{path.name}")
+
+    projects = list_projects()
+    if projects:
+        with st.expander("Open Saved Project"):
+            labels = [p["file"] for p in projects]
+            selected_project = st.selectbox("選擇專案版本", labels)
+            if st.button("Open Project"):
+                loaded = load_project(selected_project)
+                payload = loaded.get("payload", {})
+                st.session_state.v2_schedule_df = records_to_frame(payload.get("schedule"))
+                st.session_state.v2_orders_validated = records_to_frame(payload.get("orders"))
+                st.session_state.v2_kpis = payload.get("kpis")
+                st.success(f"已開啟：{selected_project}")
+
+st.divider()
+st.subheader("Legacy V1 / 手動 Excel 流程")
+st.caption("保留原 APS Lite V1 匯入方式，作為回退與手動資料流程。")
 
 top = st.columns([1, 2])
 with top[0]:

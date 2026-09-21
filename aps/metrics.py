@@ -9,17 +9,21 @@ from .scheduler import MACHINES
 def calculate_kpis(schedule_df: pd.DataFrame, settings: pd.DataFrame) -> dict[str, float]:
     start, end, _ = get_schedule_window(settings)
     horizon_hours = (end - start).total_seconds() / 3600
-    scheduled = schedule_df[schedule_df["狀態"] == "scheduled"].copy()
-    completed = int((schedule_df["狀態"] == "scheduled").sum())
-    incomplete = int((schedule_df["狀態"] != "scheduled").sum())
+    if "工單類型" in schedule_df.columns:
+        work_orders = schedule_df[schedule_df["工單類型"] != "期初在製"].copy()
+    else:
+        work_orders = schedule_df.copy()
+    scheduled = work_orders[work_orders["狀態"] == "scheduled"].copy()
+    completed = int((work_orders["狀態"] == "scheduled").sum())
+    incomplete = int((work_orders["狀態"] != "scheduled").sum())
     tardy_count = int(scheduled["是否遲交"].sum()) if not scheduled.empty else 0
     on_time = int((~scheduled["是否遲交"]).sum()) if not scheduled.empty else 0
-    total = len(schedule_df)
-    total_tardiness = float(schedule_df["遲交時間（小時）"].sum())
+    total = len(work_orders)
+    total_tardiness = float(work_orders["遲交時間（小時）"].sum())
     avg_tardiness = total_tardiness / total if total else 0.0
-    max_tardiness = float(schedule_df["遲交時間（小時）"].max()) if total else 0.0
+    max_tardiness = float(work_orders["遲交時間（小時）"].max()) if total else 0.0
     makespan = ((scheduled["結束時間"].max() - start).total_seconds() / 3600) if not scheduled.empty else 0.0
-    total_wait = float(schedule_df["等待時間（小時）"].sum())
+    total_wait = float(work_orders["等待時間（小時）"].sum())
     avg_wait = total_wait / total if total else 0.0
     loads = scheduled.groupby("指派機台")["加工時間（小時）"].sum().to_dict()
     utilizations = {machine: (loads.get(machine, 0.0) / horizon_hours * 100 if horizon_hours else 0.0) for machine in MACHINES}

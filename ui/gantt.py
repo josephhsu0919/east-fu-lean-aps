@@ -16,12 +16,15 @@ def make_gantt(schedule_df: pd.DataFrame, horizon_start: pd.Timestamp, horizon_e
         fig.update_layout(font=dict(size=15))
         return fig
     frame["工單標籤"] = frame["工單編號"].astype(str)
+    if "工單類型" not in frame.columns:
+        frame["工單類型"] = "本次 APS 新排工單"
+    color_column = "工單類型" if (frame["工單類型"] == "期初在製").any() else "優先級"
     fig = px.timeline(
         frame,
         x_start="開始時間",
         x_end="結束時間",
         y="指派機台",
-        color="優先級",
+        color=color_column,
         text="工單標籤",
         category_orders={"指派機台": MACHINES},
         hover_data={
@@ -29,13 +32,15 @@ def make_gantt(schedule_df: pd.DataFrame, horizon_start: pd.Timestamp, horizon_e
             "產品": True,
             "數量": True,
             "優先級": True,
+            "工單類型": True,
             "開始時間": True,
             "結束時間": True,
             "加工時間（小時）": ":.2f",
             "交期": True,
+            "最早可排日": True,
             "是否遲交": True,
         },
-        color_discrete_map={"急單": "#d1495b", "一般": "#277da1", "低優先": "#84a98c"},
+        color_discrete_map={"急單": "#d1495b", "一般": "#277da1", "低優先": "#84a98c", "期初在製": "#6c757d", "本次 APS 新排工單": "#277da1"},
     )
     axis_end = max(horizon_end, frame["結束時間"].max())
     fig.update_yaxes(autorange="reversed", title="機台", tickfont=dict(size=15), title_font=dict(size=16))
@@ -48,5 +53,5 @@ def make_gantt(schedule_df: pd.DataFrame, horizon_start: pd.Timestamp, horizon_e
     fig.add_vline(x=horizon_end, line_width=1, line_dash="dash", line_color="#6c757d")
     for due in sorted(frame["交期"].dropna().unique()):
         fig.add_vline(x=due, line_width=1, line_dash="dot", line_color="#f4a261")
-    fig.update_layout(height=460, margin=dict(l=20, r=20, t=30, b=20), legend_title_text="優先級", font=dict(size=15))
+    fig.update_layout(height=460, margin=dict(l=20, r=20, t=30, b=20), legend_title_text=color_column, font=dict(size=15))
     return fig
