@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from datetime import date, datetime, time
 from io import BytesIO
+from inspect import signature
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pandas as pd
@@ -417,14 +418,14 @@ def run_v2_schedule(orders: pd.DataFrame, schedule_start: pd.Timestamp, horizon_
     selected_machines = st.session_state.get("v2_selected_machines", v2_machine_options())
     workbook["產品機台產速"] = workbook["產品機台產速"][workbook["產品機台產速"]["機台"].astype(str).isin(selected_machines)].copy()
     try:
-        result = schedule(
-            workbook,
-            "v2_default",
-            horizon_start=schedule_start,
-            horizon_end=horizon_end,
-            default_changeover_minutes=45,
-            priority_order=st.session_state.get("v2_priority_order", ["指定優先", "完成日", "減少換模"]),
-        )
+        schedule_kwargs = {
+            "horizon_start": schedule_start,
+            "horizon_end": horizon_end,
+            "default_changeover_minutes": 45,
+        }
+        if "priority_order" in signature(schedule).parameters:
+            schedule_kwargs["priority_order"] = st.session_state.get("v2_priority_order", ["指定優先", "完成日", "減少換模"])
+        result = schedule(workbook, "v2_default", **schedule_kwargs)
         kpis = calculate_kpis(result, workbook["排程基本設定"])
     except Exception as exc:
         st.error(f"V2 排程失敗：{type(exc).__name__}: {exc}")
