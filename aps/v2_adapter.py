@@ -350,7 +350,7 @@ def build_scheduler_workbook(
     master_data: dict[str, pd.DataFrame],
     schedule_start: pd.Timestamp,
     horizon_end: pd.Timestamp,
-    work_time_mode: str = "每日固定工時",
+    work_time_mode: str = "24 小時連續排程",
     daily_start_time: object = "08:00",
     daily_end_time: object = "20:00",
 ) -> dict[str, pd.DataFrame]:

@@ -88,7 +88,7 @@ def init_state() -> None:
         "v2_planning_mode": "本批最晚結關日",
         "v2_custom_horizon_end": default_start + pd.Timedelta(days=14),
         "v2_execution_window_hours": 48,
-        "v2_work_time_mode": "每日固定工時",
+        "v2_work_time_mode": "24 小時連續排程",
         "v2_daily_start_time": time(8, 0),
         "v2_daily_end_time": time(20, 0),
         "v2_strategy_preset": "東福標準",
@@ -368,13 +368,14 @@ def v2_horizon_end(orders: pd.DataFrame, start: pd.Timestamp, mode: str, custom_
 
 def default_machine_status(machines: list[str], baseline: pd.Timestamp, existing: pd.DataFrame | None = None) -> pd.DataFrame:
     if existing is not None and not existing.empty and {"機台", "可排起始時間"}.issubset(existing.columns):
-        frame = existing.copy()
+        keep_cols = [col for col in ["機台", "可排起始時間", "備註"] if col in existing.columns]
+        frame = existing[keep_cols].copy()
         for machine in machines:
             if not (frame["機台"].astype(str) == machine).any():
-                frame = pd.concat([frame, pd.DataFrame([{"機台": machine, "狀態": "空機", "可排起始時間": baseline}])], ignore_index=True)
+                frame = pd.concat([frame, pd.DataFrame([{"機台": machine, "可排起始時間": baseline, "備註": ""}])], ignore_index=True)
         return frame
     return pd.DataFrame(
-        [{"機台": machine, "狀態": "空機", "目前製令": "", "目前產品": "", "剩餘數量": pd.NA, "預計完成時間": pd.NaT, "可排起始時間": baseline, "目前換模群組": ""} for machine in machines]
+        [{"機台": machine, "可排起始時間": baseline, "備註": ""} for machine in machines]
     )
 
 
@@ -382,24 +383,7 @@ def apply_machine_status_to_master(master: dict[str, pd.DataFrame], machine_stat
     status = machine_status.copy()
     status["可排起始時間"] = pd.to_datetime(status["可排起始時間"], errors="coerce")
     master["機台可排起始時間"] = status[["機台", "可排起始時間"]].dropna(subset=["機台"]).copy()
-    wip_rows = []
-    for _, row in status.iterrows():
-        if str(row.get("狀態", "")).strip() != "生產中":
-            continue
-        wip_rows.append(
-            {
-                "機台": row.get("機台"),
-                "是否有期初在製": "是",
-                "製令單號": row.get("目前製令", ""),
-                "產品品號": row.get("目前產品", ""),
-                "品名": row.get("品名", ""),
-                "剩餘數量": row.get("剩餘數量", pd.NA),
-                "預計完成時間": row.get("預計完成時間", pd.NaT),
-                "目前換模群組": row.get("目前換模群組", ""),
-            }
-        )
-    if wip_rows:
-        master["期初在製"] = pd.DataFrame(wip_rows)
+    master["期初在製"] = pd.DataFrame()
 
 
 def priority_order_text(order: list[str]) -> str:
@@ -422,7 +406,7 @@ def run_v2_schedule(orders: pd.DataFrame, schedule_start: pd.Timestamp, horizon_
         master,
         schedule_start,
         horizon_end,
-        work_time_mode=st.session_state.get("v2_work_time_mode", "每日固定工時"),
+        work_time_mode=st.session_state.get("v2_work_time_mode", "24 小時連續排程"),
         daily_start_time=st.session_state.get("v2_daily_start_time", time(8, 0)),
         daily_end_time=st.session_state.get("v2_daily_end_time", time(20, 0)),
     )
@@ -491,7 +475,7 @@ def apply_v2_project_document(document: dict, label: str) -> None:
     st.session_state.v2_priority_order = payload.get("priority_order", ["指定優先", "完成日", "減少換模"])
     st.session_state.v2_planning_mode = payload.get("planning_horizon_mode", "本批最晚結關日")
     st.session_state.v2_execution_window_hours = payload.get("execution_window_hours", 48)
-    st.session_state.v2_work_time_mode = payload.get("work_time_mode", "每日固定工時")
+    st.session_state.v2_work_time_mode = payload.get("work_time_mode", "24 小時連續排程")
     st.session_state.v2_daily_start_time = _project_time(payload.get("daily_start_time", "08:00"), time(8, 0))
     st.session_state.v2_daily_end_time = _project_time(payload.get("daily_end_time", "20:00"), time(20, 0))
     if st.session_state.v2_master_data is not None and payload.get("machine_status"):
@@ -518,7 +502,7 @@ with st.container(border=True):
 
     if st.session_state.v2_master_data:
         master = st.session_state.v2_master_data
-        master_tabs = st.tabs(["產品主檔", "產品機台產速", "機台資料", "換模設定", "期初在製"])
+        master_tabs = st.tabs(["產品主檔", "產品機台產速", "機台資料", "換模設定"])
         with master_tabs[0]:
             st.dataframe(master["產品主檔"], use_container_width=True, height=180)
         with master_tabs[1]:
@@ -528,8 +512,6 @@ with st.container(border=True):
             st.dataframe(master["機台資料"], use_container_width=True, height=180)
         with master_tabs[3]:
             master["換模設定"] = st.data_editor(master["換模設定"], use_container_width=True, num_rows="dynamic", key="v2_setup_editor")
-        with master_tabs[4]:
-            master["期初在製"] = st.data_editor(master["期初在製"], use_container_width=True, num_rows="dynamic", key="v2_wip_editor")
 
     erp_file = st.file_uploader("2. 上傳 East Fu ERP 製令 Excel", type=["xlsx"], key="v2_erp_upload")
     if erp_file is not None:
@@ -562,10 +544,10 @@ with st.container(border=True):
             st.session_state.v2_custom_horizon_end = datetime_fields("規劃至", pd.Timestamp(st.session_state.v2_custom_horizon_end), "v2_custom_horizon_end")
         st.session_state.v2_execution_window_hours = settings_cols[1].selectbox("近期執行區", [24, 48, 72, 168], index=[24, 48, 72, 168].index(int(st.session_state.v2_execution_window_hours)), format_func=lambda h: f"{h} 小時" if h < 168 else "1 週", key="v2_execution_window_hours_widget")
         st.session_state.v2_strategy_preset = settings_cols[2].selectbox("排程策略", ["東福標準", "自訂"], index=0 if st.session_state.v2_strategy_preset == "東福標準" else 1, key="v2_strategy_preset_widget")
-        work_time_options = ["每日固定工時", "24 小時連續排程"]
-        current_work_time_mode = st.session_state.get("v2_work_time_mode", "每日固定工時")
+        work_time_options = ["24 小時連續排程", "每日固定工時"]
+        current_work_time_mode = st.session_state.get("v2_work_time_mode", "24 小時連續排程")
         if current_work_time_mode not in work_time_options:
-            current_work_time_mode = "每日固定工時"
+            current_work_time_mode = "24 小時連續排程"
         st.session_state.v2_work_time_mode = settings_cols[3].selectbox(
             "工時模式",
             work_time_options,
@@ -594,7 +576,8 @@ with st.container(border=True):
             st.caption(f"目前優先順序：{priority_order_text(st.session_state.v2_priority_order)}")
         orders["completion_date"] = pd.Timestamp(completion_date)
         horizon_end = v2_horizon_end(orders, pd.Timestamp(schedule_start), st.session_state.v2_planning_mode, pd.Timestamp(st.session_state.v2_custom_horizon_end))
-        st.markdown("### 機台目前狀態 / 期初在製")
+        st.markdown("### 本次機台可排起始時間")
+        st.caption("若某台機前面有單尚未做完，直接把該機台的可排起始時間延後即可；不用在 Excel 填期初在製。")
         machine_status = default_machine_status(st.session_state.v2_selected_machines or v2_machine_options(), pd.Timestamp(schedule_start), st.session_state.v2_master_data.get("機台目前狀態") if st.session_state.v2_master_data else None)
         machine_status = st.data_editor(machine_status, use_container_width=True, num_rows="fixed", key="v2_machine_status_editor")
         st.session_state.v2_master_data["機台目前狀態"] = machine_status
@@ -658,7 +641,17 @@ with st.container(border=True):
         view_end = end if gantt_view == "全部" else min(end, start + pd.Timedelta(hours=view_hours[gantt_view]))
         gantt_frame = st.session_state.v2_schedule_df[st.session_state.v2_schedule_df["指派機台"].astype(str).isin(gantt_machines)].copy()
         gantt_frame = gantt_frame[(pd.to_datetime(gantt_frame["結束時間"], errors="coerce") >= start) & (pd.to_datetime(gantt_frame["開始時間"], errors="coerce") <= view_end)]
-        st.plotly_chart(make_gantt(gantt_frame, start, view_end), use_container_width=True)
+        gantt_fig = make_gantt(gantt_frame, start, view_end)
+        st.plotly_chart(gantt_fig, use_container_width=True)
+        gantt_html = gantt_fig.to_html(full_html=True, include_plotlyjs=True)
+        st.download_button(
+            "下載甘特圖 HTML",
+            gantt_html,
+            "EastFu_APS_Lite_V2_Gantt.html",
+            mime="text/html",
+            use_container_width=True,
+            key="v2_download_gantt_html",
+        )
         st.subheader("V2 KPI")
         render_kpis(st.session_state.v2_kpis)
         st.dataframe(st.session_state.v2_schedule_df, use_container_width=True)
@@ -672,7 +665,10 @@ with st.container(border=True):
             "優先順序": priority_order_text(st.session_state.v2_priority_order),
         }
         v2_excel = export_schedule_excel(st.session_state.v2_schedule_df, st.session_state.v2_kpis, metadata=export_metadata)
-        st.download_button("下載 Excel 排程", v2_excel, "EastFu_APS_Lite_V2_Schedule.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key="v2_download_excel")
+        package_bytes = export_schedule_package_zip(v2_excel, gantt_html)
+        export_cols = st.columns(2)
+        export_cols[0].download_button("下載 Excel 排程", v2_excel, "EastFu_APS_Lite_V2_Schedule.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key="v2_download_excel")
+        export_cols[1].download_button("一併下載 Excel + 甘特圖", package_bytes, "EastFu_APS_Lite_V2_Package.zip", mime="application/zip", use_container_width=True, key="v2_download_package")
         save_cols = st.columns([2, 1, 1])
         st.session_state.v2_project_name = save_cols[0].text_input("排程專案名稱", value=st.session_state.v2_project_name)
         payload = {
