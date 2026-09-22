@@ -38,6 +38,7 @@ st.markdown(
     html, body, [class*="css"] { font-size: 18px; }
     .stButton button, .stDownloadButton button { font-size: 20px; font-weight: 700; min-height: 3rem; }
     .stButton button[kind="primary"] { background: #ff464d; border-color: #ff464d; box-shadow: 0 8px 18px rgba(255,70,77,.22); }
+    .stButton button:disabled { background: #e5e7eb !important; border-color: #d1d5db !important; color: #6b7280 !important; box-shadow: none !important; }
     div[data-testid="stMetricValue"] { font-size: 2.2rem; }
     h1 { font-size: 2.6rem; }
     h2, h3 { font-size: 1.6rem; }
@@ -435,9 +436,9 @@ with st.container(border=True):
         default_completion = pd.Timestamp(suggested.iloc[0]).date() if not suggested.empty else pd.Timestamp.now().date()
         cols = st.columns(3)
         completion_date = cols[0].date_input("確認完成日", value=default_completion, key="v2_completion_date")
-        st.session_state.v2_selected_machines = cols[1].multiselect("本次排程機台", v2_machine_options(), default=v2_machine_options())
+        st.session_state.v2_selected_machines = cols[1].multiselect("本次排程機台", v2_machine_options(), default=v2_machine_options(), key="v2_selected_machines_widget")
         schedule_start = datetime_fields("V2 排程開始", pd.Timestamp(st.session_state.schedule_start), "v2_schedule_start")
-        horizon_hours = cols[2].selectbox("V2 排程期間", [24, 48, 72, 168], index=1, format_func=lambda h: f"{h} 小時" if h < 168 else "一週")
+        horizon_hours = cols[2].selectbox("V2 排程期間", [24, 48, 72, 168], index=1, format_func=lambda h: f"{h} 小時" if h < 168 else "一週", key="v2_horizon_hours")
         orders["completion_date"] = pd.Timestamp(completion_date)
         editable_cols = [
             "manual_priority",
@@ -476,7 +477,7 @@ with st.container(border=True):
                 horizon_end=horizon_end,
             )
             render_v2_readiness(readiness)
-            if st.button("確認設定並開始排程", type="primary", disabled=not readiness.ready, use_container_width=True):
+            if st.button("確認設定並開始排程", type="primary", disabled=not readiness.ready, use_container_width=True, key="v2_run_schedule"):
                 run_v2_schedule(validated, pd.Timestamp(schedule_start), horizon_end)
 
     if st.session_state.v2_schedule_df is not None and st.session_state.v2_kpis is not None and st.session_state.v2_workbook is not None:
@@ -493,14 +494,19 @@ with st.container(border=True):
             "orders": frame_to_records(st.session_state.v2_orders_validated),
             "schedule": frame_to_records(st.session_state.v2_schedule_df),
             "kpis": st.session_state.v2_kpis,
+            "master_data": {name: frame_to_records(frame) for name, frame in st.session_state.v2_master_data.items()} if st.session_state.v2_master_data else {},
             "workbook_orders": frame_to_records(st.session_state.v2_workbook["待排工單"]),
             "rates": frame_to_records(st.session_state.v2_workbook["產品機台產速"]),
             "settings": frame_to_records(st.session_state.v2_workbook["排程基本設定"]),
+            "schedule_start": str(start),
+            "horizon_end": str(end),
+            "selected_machines": st.session_state.get("v2_selected_machines", []),
+            "strategy": "v2_default",
         }
-        if save_cols[1].button("Save", use_container_width=True):
+        if save_cols[1].button("Save", use_container_width=True, key="v2_save_project"):
             path = save_project(st.session_state.v2_project_name, payload, save_as=False)
             st.success(f"已儲存：{path.name}")
-        if save_cols[2].button("Save As", use_container_width=True):
+        if save_cols[2].button("Save As", use_container_width=True, key="v2_save_project_as"):
             path = save_project(st.session_state.v2_project_name, payload, save_as=True)
             st.success(f"已另存版本：{path.name}")
 
@@ -509,13 +515,18 @@ with st.container(border=True):
         with st.expander("Open Saved Project"):
             labels = [p["file"] for p in projects]
             selected_project = st.selectbox("選擇專案版本", labels)
-            if st.button("Open Project"):
+            if st.button("Open Project", key="v2_open_project"):
                 loaded = load_project(selected_project)
                 payload = loaded.get("payload", {})
+                st.session_state.v2_master_data = {name: records_to_frame(records) for name, records in payload.get("master_data", {}).items()} or st.session_state.v2_master_data
                 st.session_state.v2_schedule_df = records_to_frame(payload.get("schedule"))
                 st.session_state.v2_orders_validated = records_to_frame(payload.get("orders"))
                 st.session_state.v2_kpis = payload.get("kpis")
+                st.session_state.v2_selected_machines = payload.get("selected_machines", st.session_state.get("v2_selected_machines", []))
                 st.success(f"已開啟：{selected_project}")
+
+if str(st.query_params.get("legacy_v1", "")).lower() not in {"1", "true", "yes"}:
+    st.stop()
 
 st.divider()
 st.subheader("Legacy V1 / 手動 Excel 流程")
@@ -630,7 +641,7 @@ with st.expander("基本設定", expanded=data is not None):
             st.success("產品機台產速與換模時間已保存")
 
 st.markdown("### 開始排程")
-if st.button("確認設定並開始排程", type="primary", disabled=data is None, use_container_width=True):
+if st.button("確認設定並開始排程", type="primary", disabled=data is None, use_container_width=True, key="legacy_v1_run_schedule"):
     run_schedule("INITIAL")
 
 with st.expander("操作問題小幫手", expanded=False):
