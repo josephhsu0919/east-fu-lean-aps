@@ -201,3 +201,73 @@ def test_10_setup_must_not_dominate_completion_date_order():
         initial_group="包紗",
     )
     assert _sequence(schedule(wb, "v2_default", horizon_start=START, horizon_end=END, default_changeover_minutes=45)) == ["A", "B", "C"]
+
+
+def test_custom_strategy_completion_date_before_manual_priority():
+    wb = _workbook(
+        [
+            {"工單編號": "A", "完成日": "2026-09-25 23:59", "指定優先": False},
+            {"工單編號": "B", "完成日": "2026-09-30 23:59", "指定優先": True},
+        ]
+    )
+    result = schedule(wb, "v2_default", horizon_start=START, horizon_end=END, default_changeover_minutes=45, priority_order=["完成日", "指定優先", "減少換模"])
+    assert _sequence(result) == ["A", "B"]
+
+
+def test_custom_strategy_setup_before_completion_date():
+    wb = _workbook(
+        [
+            {"工單編號": "A", "完成日": "2026-09-24 23:59"},
+            {"工單編號": "B", "完成日": "2026-09-30 23:59"},
+        ],
+        groups={"A": "沒包紗", "B": "包紗"},
+        initial_group="包紗",
+    )
+    result = schedule(wb, "v2_default", horizon_start=START, horizon_end=END, default_changeover_minutes=45, priority_order=["減少換模", "完成日", "指定優先"])
+    assert _sequence(result) == ["B", "A"]
+
+
+def test_machine_specific_available_from_is_respected():
+    wb = _workbook(
+        [
+            {"工單編號": "A", "完成日": "2026-09-25 23:59"},
+        ]
+    )
+    wb["機台可排起始時間"] = pd.DataFrame([{"機台": "C2", "可排起始時間": pd.Timestamp("2026-09-23 14:30")}])
+    result = schedule(wb, "v2_default", horizon_start=START, horizon_end=END, default_changeover_minutes=45)
+    assert result.loc[result["工單編號"] == "A", "開始時間"].iloc[0] >= pd.Timestamp("2026-09-23 14:30")
+
+
+def test_initial_wip_setup_state_breaks_tie_after_available_time():
+    wb = _workbook(
+        [
+            {"工單編號": "A", "完成日": "2026-09-25 23:59"},
+            {"工單編號": "B", "完成日": "2026-09-25 23:59"},
+        ],
+        groups={"A": "沒包紗", "B": "包紗"},
+        initial_wip={
+            "機台": "C2",
+            "是否有期初在製": "是",
+            "製令單號": "WIP-001",
+            "產品品號": "B",
+            "剩餘數量": 1,
+            "預計完成時間": pd.Timestamp("2026-09-20 10:30"),
+            "目前換模群組": "包紗",
+        },
+    )
+    result = schedule(wb, "v2_default", horizon_start=START, horizon_end=END, default_changeover_minutes=45)
+    assert _sequence(result) == ["B", "A"]
+    assert result.loc[result["工單編號"] == "B", "開始時間"].iloc[0] >= pd.Timestamp("2026-09-20 10:30")
+
+
+def test_v2_processing_spans_machine_non_working_blocks():
+    wb = _workbook(
+        [
+            {"工單編號": "A", "完成日": "2026-09-25 23:59", "數量": 2000},
+        ]
+    )
+    unavailability = pd.DataFrame([{"機台": "C2", "不可用開始": pd.Timestamp("2026-09-20 20:00"), "不可用結束": pd.Timestamp("2026-09-21 08:00"), "原因": "夜間停機"}])
+    result = schedule(wb, "v2_default", horizon_start=START, horizon_end=END, default_changeover_minutes=45, unavailability=unavailability)
+    row = result[result["工單編號"] == "A"].iloc[0]
+    assert row["開始時間"] == START
+    assert row["結束時間"] == pd.Timestamp("2026-09-21 16:00")

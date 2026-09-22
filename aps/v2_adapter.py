@@ -304,6 +304,7 @@ def build_scheduler_workbook(orders: pd.DataFrame, master_data: dict[str, pd.Dat
     rates = master_data["產品機台產速"].copy()
     setup = master_data.get("換模設定", pd.DataFrame()).copy()
     initial_wip = master_data.get("期初在製", pd.DataFrame()).copy()
+    machine_available_from = master_data.get("機台可排起始時間", pd.DataFrame()).copy()
 
     group_lookup = product_master.dropna(subset=["產品品號"]).drop_duplicates("產品品號").set_index("產品品號").get("換模群組", pd.Series(dtype=object)).to_dict()
     due = pd.to_datetime(orders["completion_date"], errors="coerce")
@@ -348,5 +349,6 @@ def build_scheduler_workbook(orders: pd.DataFrame, master_data: dict[str, pd.Dat
         "產品機台產速": rates,
         "換模時間": setup,
         "期初在製": initial_wip,
+        "機台可排起始時間": machine_available_from,
         "排程基本設定": settings,
     }

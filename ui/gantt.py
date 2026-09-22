@@ -18,6 +18,9 @@ def make_gantt(schedule_df: pd.DataFrame, horizon_start: pd.Timestamp, horizon_e
     frame["工單標籤"] = frame["工單編號"].astype(str)
     if "工單類型" not in frame.columns:
         frame["工單類型"] = "本次 APS 新排工單"
+    for column in ["品名", "指定優先", "換模群組", "換模時間（小時）", "完成日"]:
+        if column not in frame.columns:
+            frame[column] = pd.NA
     color_column = "工單類型" if (frame["工單類型"] == "期初在製").any() else "優先級"
     fig = px.timeline(
         frame,
@@ -28,13 +31,19 @@ def make_gantt(schedule_df: pd.DataFrame, horizon_start: pd.Timestamp, horizon_e
         text="工單標籤",
         category_orders={"指派機台": MACHINES},
         hover_data={
+            "指派機台": True,
             "工單編號": True,
             "產品": True,
+            "品名": True,
             "數量": True,
+            "指定優先": True,
+            "換模群組": True,
+            "換模時間（小時）": ":.2f",
             "優先級": True,
             "工單類型": True,
             "開始時間": True,
             "結束時間": True,
+            "完成日": True,
             "加工時間（小時）": ":.2f",
             "交期": True,
             "最早可排日": True,
@@ -53,5 +62,5 @@ def make_gantt(schedule_df: pd.DataFrame, horizon_start: pd.Timestamp, horizon_e
     fig.add_vline(x=horizon_end, line_width=1, line_dash="dash", line_color="#6c757d")
     for due in sorted(frame["交期"].dropna().unique()):
         fig.add_vline(x=due, line_width=1, line_dash="dot", line_color="#f4a261")
-    fig.update_layout(height=460, margin=dict(l=20, r=20, t=30, b=20), legend_title_text=color_column, font=dict(size=15))
+    fig.update_layout(height=680, margin=dict(l=20, r=20, t=30, b=20), legend_title_text=color_column, font=dict(size=15), dragmode="pan")
     return fig

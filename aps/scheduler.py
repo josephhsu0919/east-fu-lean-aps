@@ -63,6 +63,45 @@ def _next_available_start(candidate_start: pd.Timestamp, duration_hours: float, 
     return current if current + duration <= horizon_end else None
 
 
+def _fit_work_across_available_time(
+    candidate_start: pd.Timestamp,
+    duration_hours: float,
+    horizon_end: pd.Timestamp,
+    blocks: list[tuple[pd.Timestamp, pd.Timestamp]],
+) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    current = pd.Timestamp(candidate_start)
+    remaining = pd.to_timedelta(duration_hours, unit="h")
+    blocks = sorted((pd.Timestamp(start), pd.Timestamp(end)) for start, end in blocks)
+
+    while current < horizon_end and remaining > pd.Timedelta(0):
+        moved = False
+        for block_start, block_end in blocks:
+            if block_start <= current < block_end:
+                current = block_end
+                moved = True
+                break
+        if moved:
+            continue
+
+        next_block_start = horizon_end
+        for block_start, block_end in blocks:
+            if block_start > current:
+                next_block_start = block_start
+                break
+        available_until = min(next_block_start, horizon_end)
+        if current >= available_until:
+            current = available_until
+            continue
+
+        usable = available_until - current
+        if usable >= remaining:
+            return pd.Timestamp(candidate_start), current + remaining
+        remaining -= usable
+        current = available_until
+
+    return None
+
+
 def _rate_changeover_group(candidate: pd.Series, order: pd.Series) -> str:
     group = candidate.get("換模群組", order.get("換模群組", order["產品"]))
     if group is None or pd.isna(group) or str(group).strip() == "":
@@ -80,6 +119,8 @@ def _changeover_minutes(
         return 0.0
     if (from_group, to_group) in changeover_lookup:
         return float(changeover_lookup[(from_group, to_group)])
+    if from_group == to_group:
+        return 0.0
     if (from_group, "任何") in changeover_lookup:
         return float(changeover_lookup[(from_group, "任何")])
     if ("未知", "任何") in changeover_lookup and (not from_group or not to_group):
@@ -126,6 +167,7 @@ def _append_unscheduled_row(rows: list[dict], sequence: int, order: pd.Series, s
             "交期": order["交期"],
             "完成日": order.get("完成日", order["交期"]),
             "最早可排日": order.get("最早可排日", pd.NaT),
+            "結關日": order.get("結關日", pd.NaT),
             "換模群組": order.get("換模群組", pd.NA),
             "指派機台": "無合格機台" if status == "無合格機台" else "",
             "產速": 0.0,
@@ -170,6 +212,7 @@ def _append_scheduled_row(
             "交期": order["交期"],
             "完成日": order.get("完成日", order["交期"]),
             "最早可排日": order.get("最早可排日", pd.NaT),
+            "結關日": order.get("結關日", pd.NaT),
             "換模群組": setup_group,
             "指派機台": str(chosen["機台"]),
             "產速": float(chosen["產速_PCS_per_hr"]),
@@ -205,15 +248,29 @@ def _candidate_for_machine(
     release_date = pd.to_datetime(order.get("最早可排日"), errors="coerce")
     if pd.notna(release_date):
         raw_start = max(raw_start, pd.Timestamp(release_date))
-    available_start = _next_available_start(raw_start, duration_hours, horizon_end, block_map.get(machine, []))
-    if available_start is None:
+    fitted = _fit_work_across_available_time(raw_start, duration_hours, horizon_end, block_map.get(machine, []))
+    if fitted is None:
         return None
+    available_start, projected_end = fitted
     candidate["duration_hours"] = duration_hours
     candidate["changeover_hours"] = changeover_hours
     candidate["ready_time"] = available_start
-    candidate["projected_end"] = available_start + pd.to_timedelta(duration_hours, unit="h")
+    candidate["projected_end"] = projected_end
     candidate["target_group"] = target_group
     return candidate
+
+
+def _priority_sort_key(order: pd.Series, candidate: pd.Series, priority_order: list[str]) -> tuple:
+    values = {
+        "指定優先": _manual_priority_rank(order),
+        "完成日": _completion_date(order),
+        "減少換模": float(candidate["changeover_hours"]),
+    }
+    return tuple(values[item] for item in priority_order if item in values) + (
+        _order_id(order),
+        pd.Timestamp(candidate["projected_end"]),
+        str(candidate["機台"]),
+    )
 
 
 def _schedule_v2_default(
@@ -228,7 +285,9 @@ def _schedule_v2_default(
     default_changeover_minutes: float,
     changeover_lookup: dict[tuple[str, str], float],
     block_map: dict[str, list[tuple[pd.Timestamp, pd.Timestamp]]],
+    priority_order: list[str] | None = None,
 ) -> pd.DataFrame:
+    priority_order = priority_order or ["指定優先", "完成日", "減少換模"]
     remaining = orders.copy()
     sequence = 1
     while not remaining.empty:
@@ -257,14 +316,7 @@ def _schedule_v2_default(
                 candidate = _candidate_for_machine(order, rate, machine_ready, machine_last_group, horizon_end, default_changeover_minutes, changeover_lookup, block_map)
                 if candidate is None:
                     continue
-                sort_key = (
-                    _manual_priority_rank(order),
-                    _completion_date(order),
-                    float(candidate["changeover_hours"]),
-                    _order_id(order),
-                    pd.Timestamp(candidate["projected_end"]),
-                    machine,
-                )
+                sort_key = _priority_sort_key(order, candidate, priority_order)
                 candidates.append((sort_key, idx, order, candidate))
 
         if not candidates:
@@ -384,6 +436,7 @@ def schedule(
     horizon_end: pd.Timestamp | None = None,
     default_changeover_minutes: float = 30,
     unavailability: pd.DataFrame | None = None,
+    priority_order: list[str] | None = None,
 ) -> pd.DataFrame:
     if "排程基本設定" not in workbook:
         workbook = normalize_workbook(workbook)
@@ -403,6 +456,14 @@ def schedule(
         availability["可用結束"] = pd.to_datetime(availability["可用結束"], errors="coerce")
     start, horizon_end, _ = get_schedule_window(settings, horizon_start, horizon_end)
     machine_ready = {machine: start for machine in MACHINES}
+    machine_available_from = workbook.get("機台可排起始時間", pd.DataFrame()).copy()
+    if not machine_available_from.empty and {"機台", "可排起始時間"}.issubset(machine_available_from.columns):
+        machine_available_from["可排起始時間"] = pd.to_datetime(machine_available_from["可排起始時間"], errors="coerce")
+        for _, row in machine_available_from.iterrows():
+            machine = str(row["機台"])
+            available_from = row["可排起始時間"]
+            if machine in machine_ready and pd.notna(available_from):
+                machine_ready[machine] = max(start, pd.Timestamp(available_from))
     machine_load = {machine: 0.0 for machine in MACHINES}
     initial_state = workbook.get("機台初始狀態", pd.DataFrame()).copy()
     product_groups = rates.dropna(subset=["產品"]).drop_duplicates("產品").set_index("產品")["換模群組"].to_dict() if "換模群組" in rates.columns else {}
@@ -433,7 +494,7 @@ def schedule(
             finish = max(pd.Timestamp(finish), start)
             raw_qty = pd.to_numeric(pd.Series([wip.get("剩餘數量", 0)]), errors="coerce").iloc[0]
             wip_qty = 0.0 if pd.isna(raw_qty) else float(raw_qty)
-            machine_ready[machine] = finish
+            machine_ready[machine] = max(machine_ready[machine], finish)
             setup_group = wip.get("目前換模群組")
             if pd.isna(setup_group) or str(setup_group).strip() == "":
                 setup_group = product_groups.get(str(product), str(product))
@@ -452,6 +513,7 @@ def schedule(
                     "交期": pd.NaT,
                     "完成日": pd.NaT,
                     "最早可排日": pd.NaT,
+                    "結關日": pd.NaT,
                     "換模群組": str(setup_group),
                     "指派機台": machine,
                     "產速": 0.0,
@@ -483,6 +545,7 @@ def schedule(
             default_changeover_minutes,
             changeover_lookup,
             block_map,
+            priority_order,
         )
     sorted_orders = sort_orders(orders, rates, strategy_code)
     for sequence, (_, order) in enumerate(sorted_orders.iterrows(), start=1):
@@ -502,6 +565,7 @@ def schedule(
                     "交期": order["交期"],
                     "完成日": order.get("完成日", order["交期"]),
                     "最早可排日": order.get("最早可排日", pd.NaT),
+                    "結關日": order.get("結關日", pd.NaT),
                     "指派機台": "無合格機台",
                     "產速": 0.0,
                     "加工時間（小時）": 0.0,
@@ -555,6 +619,7 @@ def schedule(
                 "交期": order["交期"],
                 "完成日": order.get("完成日", order["交期"]),
                 "最早可排日": order.get("最早可排日", pd.NaT),
+                "結關日": order.get("結關日", pd.NaT),
                 "指派機台": machine,
                 "產速": rate,
                 "加工時間（小時）": round(duration_hours, 4),

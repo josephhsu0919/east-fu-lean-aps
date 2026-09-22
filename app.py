@@ -84,6 +84,12 @@ def init_state() -> None:
         "v2_workbook": None,
         "v2_erp_filename": "",
         "v2_project_name": "2026W39_ProductionSchedule",
+        "v2_planning_mode": "本批最晚結關日",
+        "v2_custom_horizon_end": default_start + pd.Timedelta(days=14),
+        "v2_execution_window_hours": 48,
+        "v2_strategy_preset": "東福標準",
+        "v2_priority_order": ["指定優先", "完成日", "減少換模"],
+        "v2_lock_execution_window": False,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -338,6 +344,64 @@ def v2_machine_options() -> list[str]:
     return machines or MACHINES
 
 
+def v2_horizon_end(orders: pd.DataFrame, start: pd.Timestamp, mode: str, custom_end: pd.Timestamp) -> pd.Timestamp:
+    if mode == "本批最晚結關日":
+        dates = pd.to_datetime(orders.get("customs_closing_date"), errors="coerce").dropna()
+        if not dates.empty:
+            return max(pd.Timestamp(dates.max()).normalize() + pd.Timedelta(hours=23, minutes=59, seconds=59), start)
+    if mode == "本批最晚完成日":
+        dates = pd.to_datetime(orders.get("completion_date"), errors="coerce").dropna()
+        if not dates.empty:
+            return max(pd.Timestamp(dates.max()).normalize() + pd.Timedelta(hours=23, minutes=59, seconds=59), start)
+    if mode == "1 週":
+        return start + pd.Timedelta(days=7)
+    if mode == "2 週":
+        return start + pd.Timedelta(days=14)
+    if mode == "1 個月":
+        return start + pd.DateOffset(months=1)
+    return pd.Timestamp(custom_end)
+
+
+def default_machine_status(machines: list[str], baseline: pd.Timestamp, existing: pd.DataFrame | None = None) -> pd.DataFrame:
+    if existing is not None and not existing.empty and {"機台", "可排起始時間"}.issubset(existing.columns):
+        frame = existing.copy()
+        for machine in machines:
+            if not (frame["機台"].astype(str) == machine).any():
+                frame = pd.concat([frame, pd.DataFrame([{"機台": machine, "狀態": "空機", "可排起始時間": baseline}])], ignore_index=True)
+        return frame
+    return pd.DataFrame(
+        [{"機台": machine, "狀態": "空機", "目前製令": "", "目前產品": "", "剩餘數量": pd.NA, "預計完成時間": pd.NaT, "可排起始時間": baseline, "目前換模群組": ""} for machine in machines]
+    )
+
+
+def apply_machine_status_to_master(master: dict[str, pd.DataFrame], machine_status: pd.DataFrame) -> None:
+    status = machine_status.copy()
+    status["可排起始時間"] = pd.to_datetime(status["可排起始時間"], errors="coerce")
+    master["機台可排起始時間"] = status[["機台", "可排起始時間"]].dropna(subset=["機台"]).copy()
+    wip_rows = []
+    for _, row in status.iterrows():
+        if str(row.get("狀態", "")).strip() != "生產中":
+            continue
+        wip_rows.append(
+            {
+                "機台": row.get("機台"),
+                "是否有期初在製": "是",
+                "製令單號": row.get("目前製令", ""),
+                "產品品號": row.get("目前產品", ""),
+                "品名": row.get("品名", ""),
+                "剩餘數量": row.get("剩餘數量", pd.NA),
+                "預計完成時間": row.get("預計完成時間", pd.NaT),
+                "目前換模群組": row.get("目前換模群組", ""),
+            }
+        )
+    if wip_rows:
+        master["期初在製"] = pd.DataFrame(wip_rows)
+
+
+def priority_order_text(order: list[str]) -> str:
+    return " → ".join(order)
+
+
 def run_v2_schedule(orders: pd.DataFrame, schedule_start: pd.Timestamp, horizon_end: pd.Timestamp) -> None:
     master = st.session_state.v2_master_data
     if not master:
@@ -359,6 +423,7 @@ def run_v2_schedule(orders: pd.DataFrame, schedule_start: pd.Timestamp, horizon_
             horizon_start=schedule_start,
             horizon_end=horizon_end,
             default_changeover_minutes=45,
+            priority_order=st.session_state.get("v2_priority_order", ["指定優先", "完成日", "減少換模"]),
         )
         kpis = calculate_kpis(result, workbook["排程基本設定"])
     except Exception as exc:
@@ -434,12 +499,43 @@ with st.container(border=True):
         orders = st.session_state.v2_orders.copy()
         suggested = orders["suggested_completion_date"].dropna()
         default_completion = pd.Timestamp(suggested.iloc[0]).date() if not suggested.empty else pd.Timestamp.now().date()
+        st.markdown("### 排程設定")
         cols = st.columns(3)
         completion_date = cols[0].date_input("確認完成日", value=default_completion, key="v2_completion_date")
         st.session_state.v2_selected_machines = cols[1].multiselect("本次排程機台", v2_machine_options(), default=v2_machine_options(), key="v2_selected_machines_widget")
-        schedule_start = datetime_fields("V2 排程開始", pd.Timestamp(st.session_state.schedule_start), "v2_schedule_start")
-        horizon_hours = cols[2].selectbox("V2 排程期間", [24, 48, 72, 168], index=1, format_func=lambda h: f"{h} 小時" if h < 168 else "一週", key="v2_horizon_hours")
+        schedule_start = datetime_fields("排程基準時間", pd.Timestamp(st.session_state.schedule_start), "v2_schedule_start")
+        settings_cols = st.columns(4)
+        st.session_state.v2_planning_mode = settings_cols[0].selectbox(
+            "規劃範圍",
+            ["本批最晚結關日", "本批最晚完成日", "1 週", "2 週", "1 個月", "自訂日期"],
+            index=["本批最晚結關日", "本批最晚完成日", "1 週", "2 週", "1 個月", "自訂日期"].index(st.session_state.v2_planning_mode),
+            key="v2_planning_mode_widget",
+        )
+        if st.session_state.v2_planning_mode == "自訂日期":
+            st.session_state.v2_custom_horizon_end = datetime_fields("規劃至", pd.Timestamp(st.session_state.v2_custom_horizon_end), "v2_custom_horizon_end")
+        st.session_state.v2_execution_window_hours = settings_cols[1].selectbox("近期執行區", [24, 48, 72, 168], index=[24, 48, 72, 168].index(int(st.session_state.v2_execution_window_hours)), format_func=lambda h: f"{h} 小時" if h < 168 else "1 週", key="v2_execution_window_hours_widget")
+        st.session_state.v2_strategy_preset = settings_cols[2].selectbox("排程策略", ["東福標準", "自訂"], index=0 if st.session_state.v2_strategy_preset == "東福標準" else 1, key="v2_strategy_preset_widget")
+        st.session_state.v2_lock_execution_window = settings_cols[3].checkbox("近期執行區鎖定（未啟用）", value=bool(st.session_state.v2_lock_execution_window), disabled=True, key="v2_lock_execution_window_widget")
+        if st.session_state.v2_strategy_preset == "東福標準":
+            st.session_state.v2_priority_order = ["指定優先", "完成日", "減少換模"]
+            st.caption("目前優先順序：指定優先 → 完成日 → 減少換模")
+        else:
+            selected_order = st.multiselect(
+                "自訂優先順序（依選取順序套用）",
+                ["指定優先", "完成日", "減少換模"],
+                default=st.session_state.v2_priority_order,
+                max_selections=3,
+                key="v2_priority_order_widget",
+            )
+            st.session_state.v2_priority_order = selected_order + [item for item in ["指定優先", "完成日", "減少換模"] if item not in selected_order]
+            st.caption(f"目前優先順序：{priority_order_text(st.session_state.v2_priority_order)}")
         orders["completion_date"] = pd.Timestamp(completion_date)
+        horizon_end = v2_horizon_end(orders, pd.Timestamp(schedule_start), st.session_state.v2_planning_mode, pd.Timestamp(st.session_state.v2_custom_horizon_end))
+        st.markdown("### 機台目前狀態 / 期初在製")
+        machine_status = default_machine_status(st.session_state.v2_selected_machines or v2_machine_options(), pd.Timestamp(schedule_start), st.session_state.v2_master_data.get("機台目前狀態") if st.session_state.v2_master_data else None)
+        machine_status = st.data_editor(machine_status, use_container_width=True, num_rows="fixed", key="v2_machine_status_editor")
+        st.session_state.v2_master_data["機台目前狀態"] = machine_status
+        apply_machine_status_to_master(st.session_state.v2_master_data, machine_status)
         editable_cols = [
             "manual_priority",
             "work_order_id",
@@ -466,7 +562,14 @@ with st.container(border=True):
             problem_rows = validated[validated["問題"] != ""]
             if not problem_rows.empty:
                 st.dataframe(problem_rows, use_container_width=True, height=220)
-            horizon_end = pd.Timestamp(schedule_start) + pd.to_timedelta(int(horizon_hours), unit="h")
+            st.info(
+                f"本次規劃範圍：{pd.Timestamp(schedule_start):%Y/%m/%d %H:%M} ～ {pd.Timestamp(horizon_end):%Y/%m/%d %H:%M}；"
+                f"近期執行區：前 {int(st.session_state.v2_execution_window_hours)} 小時；"
+                f"排程策略：{st.session_state.v2_strategy_preset}；"
+                f"優先順序：{priority_order_text(st.session_state.v2_priority_order)}"
+            )
+            for _, status_row in machine_status.iterrows():
+                st.caption(f"{status_row.get('機台')} 可排：{pd.to_datetime(status_row.get('可排起始時間'), errors='coerce')}")
             readiness = assess_v2_schedule_readiness(
                 master_data=st.session_state.v2_master_data,
                 orders=orders,
@@ -483,10 +586,26 @@ with st.container(border=True):
     if st.session_state.v2_schedule_df is not None and st.session_state.v2_kpis is not None and st.session_state.v2_workbook is not None:
         start, end, _ = get_schedule_window(st.session_state.v2_workbook["排程基本設定"])
         st.subheader("V2 甘特圖")
-        st.plotly_chart(make_gantt(st.session_state.v2_schedule_df, start, end), use_container_width=True)
+        gantt_cols = st.columns(2)
+        gantt_view = gantt_cols[0].selectbox("甘特圖顯示範圍", ["24H", "48H", "1週", "2週", "全部"], index=1, key="v2_gantt_view")
+        gantt_machines = gantt_cols[1].multiselect("甘特圖機台", v2_machine_options(), default=v2_machine_options(), key="v2_gantt_machines")
+        view_hours = {"24H": 24, "48H": 48, "1週": 168, "2週": 336}
+        view_end = end if gantt_view == "全部" else min(end, start + pd.Timedelta(hours=view_hours[gantt_view]))
+        gantt_frame = st.session_state.v2_schedule_df[st.session_state.v2_schedule_df["指派機台"].astype(str).isin(gantt_machines)].copy()
+        gantt_frame = gantt_frame[(pd.to_datetime(gantt_frame["結束時間"], errors="coerce") >= start) & (pd.to_datetime(gantt_frame["開始時間"], errors="coerce") <= view_end)]
+        st.plotly_chart(make_gantt(gantt_frame, start, view_end), use_container_width=True)
         st.subheader("V2 KPI")
         render_kpis(st.session_state.v2_kpis)
         st.dataframe(st.session_state.v2_schedule_df, use_container_width=True)
+        export_metadata = {
+            "規劃開始": str(start),
+            "規劃結束": str(end),
+            "近期執行區": f"{st.session_state.v2_execution_window_hours} 小時",
+            "排程策略": st.session_state.v2_strategy_preset,
+            "優先順序": priority_order_text(st.session_state.v2_priority_order),
+        }
+        v2_excel = export_schedule_excel(st.session_state.v2_schedule_df, st.session_state.v2_kpis, metadata=export_metadata)
+        st.download_button("下載 Excel 排程", v2_excel, "EastFu_APS_Lite_V2_Schedule.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key="v2_download_excel")
         save_cols = st.columns([2, 1, 1])
         st.session_state.v2_project_name = save_cols[0].text_input("排程專案名稱", value=st.session_state.v2_project_name)
         payload = {
@@ -501,7 +620,12 @@ with st.container(border=True):
             "schedule_start": str(start),
             "horizon_end": str(end),
             "selected_machines": st.session_state.get("v2_selected_machines", []),
-            "strategy": "v2_default",
+            "strategy": st.session_state.v2_strategy_preset,
+            "priority_order": st.session_state.v2_priority_order,
+            "planning_horizon_mode": st.session_state.v2_planning_mode,
+            "planning_horizon_end": str(end),
+            "execution_window_hours": st.session_state.v2_execution_window_hours,
+            "machine_status": frame_to_records(st.session_state.v2_master_data.get("機台目前狀態") if st.session_state.v2_master_data else None),
         }
         if save_cols[1].button("Save", use_container_width=True, key="v2_save_project"):
             path = save_project(st.session_state.v2_project_name, payload, save_as=False)
@@ -523,6 +647,12 @@ with st.container(border=True):
                 st.session_state.v2_orders_validated = records_to_frame(payload.get("orders"))
                 st.session_state.v2_kpis = payload.get("kpis")
                 st.session_state.v2_selected_machines = payload.get("selected_machines", st.session_state.get("v2_selected_machines", []))
+                st.session_state.v2_strategy_preset = payload.get("strategy", "東福標準")
+                st.session_state.v2_priority_order = payload.get("priority_order", ["指定優先", "完成日", "減少換模"])
+                st.session_state.v2_planning_mode = payload.get("planning_horizon_mode", "本批最晚結關日")
+                st.session_state.v2_execution_window_hours = payload.get("execution_window_hours", 48)
+                if st.session_state.v2_master_data is not None and payload.get("machine_status"):
+                    st.session_state.v2_master_data["機台目前狀態"] = records_to_frame(payload.get("machine_status"))
                 st.success(f"已開啟：{selected_project}")
 
 if str(st.query_params.get("legacy_v1", "")).lower() not in {"1", "true", "yes"}:
