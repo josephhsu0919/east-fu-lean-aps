@@ -16,7 +16,7 @@ from aps.history import create_schedule_version, load_history, version_orders_fr
 from aps.manual import answer_from_manual, manual_text
 from aps.metrics import calculate_kpis, kpis_to_frame
 from aps.parser import clean_label, get_schedule_window, load_workbook
-from aps.project_store import frame_to_records, list_projects, load_project, records_to_frame, save_project
+from aps.project_store import frame_to_records, list_projects, load_project, load_project_bytes, project_to_bytes, records_to_frame, save_project
 from aps.sample_data import write_demo_excel
 from aps.scheduler import MACHINES, schedule
 from aps.strategies import STRATEGIES
@@ -467,6 +467,41 @@ def render_v2_readiness(readiness) -> None:
         st.warning("\n".join(lines))
 
 
+def _project_time(value: object, fallback: time) -> time:
+    parsed = pd.to_datetime(value, errors="coerce")
+    return fallback if pd.isna(parsed) else parsed.time()
+
+
+def apply_v2_project_document(document: dict, label: str) -> None:
+    payload = document.get("payload", document)
+    st.session_state.v2_erp_filename = payload.get("erp_filename", "")
+    st.session_state.v2_master_data = {name: records_to_frame(records) for name, records in payload.get("master_data", {}).items()} or st.session_state.v2_master_data
+    st.session_state.v2_orders = records_to_frame(payload.get("orders"))
+    st.session_state.v2_orders_validated = records_to_frame(payload.get("orders"))
+    st.session_state.v2_schedule_df = records_to_frame(payload.get("schedule"))
+    st.session_state.v2_kpis = payload.get("kpis")
+    if payload.get("workbook_orders") or payload.get("rates") or payload.get("settings"):
+        st.session_state.v2_workbook = {
+            "待排工單": records_to_frame(payload.get("workbook_orders")),
+            "產品機台產速": records_to_frame(payload.get("rates")),
+            "排程基本設定": records_to_frame(payload.get("settings")),
+        }
+    st.session_state.v2_selected_machines = payload.get("selected_machines", st.session_state.get("v2_selected_machines", []))
+    st.session_state.v2_strategy_preset = payload.get("strategy", "東福標準")
+    st.session_state.v2_priority_order = payload.get("priority_order", ["指定優先", "完成日", "減少換模"])
+    st.session_state.v2_planning_mode = payload.get("planning_horizon_mode", "本批最晚結關日")
+    st.session_state.v2_execution_window_hours = payload.get("execution_window_hours", 48)
+    st.session_state.v2_work_time_mode = payload.get("work_time_mode", "每日固定工時")
+    st.session_state.v2_daily_start_time = _project_time(payload.get("daily_start_time", "08:00"), time(8, 0))
+    st.session_state.v2_daily_end_time = _project_time(payload.get("daily_end_time", "20:00"), time(20, 0))
+    if st.session_state.v2_master_data is not None and payload.get("machine_status"):
+        st.session_state.v2_master_data["機台目前狀態"] = records_to_frame(payload.get("machine_status"))
+    metadata = document.get("metadata", {})
+    if metadata.get("schedule_name"):
+        st.session_state.v2_project_name = metadata["schedule_name"]
+    st.success(f"已開啟：{label}")
+
+
 init_state()
 st.title("East Fu APS Lite V2")
 st.caption("ERP Excel → Upload → Confirm → Schedule → Review → Save")
@@ -664,34 +699,40 @@ with st.container(border=True):
         }
         if save_cols[1].button("Save", use_container_width=True, key="v2_save_project"):
             path = save_project(st.session_state.v2_project_name, payload, save_as=False)
+            st.session_state.v2_last_project_path = str(path)
             st.success(f"已儲存：{path.name}")
         if save_cols[2].button("Save As", use_container_width=True, key="v2_save_project_as"):
             path = save_project(st.session_state.v2_project_name, payload, save_as=True)
+            st.session_state.v2_last_project_path = str(path)
             st.success(f"已另存版本：{path.name}")
+        project_file_name, project_bytes = project_to_bytes(st.session_state.v2_project_name, payload)
+        st.download_button(
+            "下載排程專案檔 JSON（可帶到其他電腦開啟）",
+            project_bytes,
+            project_file_name,
+            mime="application/json",
+            use_container_width=True,
+            key="v2_download_project_json",
+        )
 
     projects = list_projects()
-    if projects:
-        with st.expander("Open Saved Project"):
+    with st.expander("Open / Import Saved Project"):
+        uploaded_project = st.file_uploader("上傳排程專案檔 JSON", type=["json"], key="v2_project_upload")
+        if uploaded_project is not None and st.button("開啟上傳的專案檔", use_container_width=True, key="v2_open_uploaded_project"):
+            try:
+                loaded = load_project_bytes(uploaded_project.getvalue())
+                apply_v2_project_document(loaded, uploaded_project.name)
+            except Exception as exc:
+                st.error(f"專案檔無法開啟：{type(exc).__name__}: {exc}")
+
+        if projects:
             labels = [p["file"] for p in projects]
             selected_project = st.selectbox("選擇專案版本", labels)
             if st.button("Open Project", key="v2_open_project"):
                 loaded = load_project(selected_project)
-                payload = loaded.get("payload", {})
-                st.session_state.v2_master_data = {name: records_to_frame(records) for name, records in payload.get("master_data", {}).items()} or st.session_state.v2_master_data
-                st.session_state.v2_schedule_df = records_to_frame(payload.get("schedule"))
-                st.session_state.v2_orders_validated = records_to_frame(payload.get("orders"))
-                st.session_state.v2_kpis = payload.get("kpis")
-                st.session_state.v2_selected_machines = payload.get("selected_machines", st.session_state.get("v2_selected_machines", []))
-                st.session_state.v2_strategy_preset = payload.get("strategy", "東福標準")
-                st.session_state.v2_priority_order = payload.get("priority_order", ["指定優先", "完成日", "減少換模"])
-                st.session_state.v2_planning_mode = payload.get("planning_horizon_mode", "本批最晚結關日")
-                st.session_state.v2_execution_window_hours = payload.get("execution_window_hours", 48)
-                st.session_state.v2_work_time_mode = payload.get("work_time_mode", "每日固定工時")
-                st.session_state.v2_daily_start_time = pd.to_datetime(payload.get("daily_start_time", "08:00"), errors="coerce").time()
-                st.session_state.v2_daily_end_time = pd.to_datetime(payload.get("daily_end_time", "20:00"), errors="coerce").time()
-                if st.session_state.v2_master_data is not None and payload.get("machine_status"):
-                    st.session_state.v2_master_data["機台目前狀態"] = records_to_frame(payload.get("machine_status"))
-                st.success(f"已開啟：{selected_project}")
+                apply_v2_project_document(loaded, selected_project)
+        else:
+            st.caption("目前這個 App 環境尚未儲存任何內部專案。可改用上方 JSON 上傳。")
 
 if str(st.query_params.get("legacy_v1", "")).lower() not in {"1", "true", "yes"}:
     st.stop()

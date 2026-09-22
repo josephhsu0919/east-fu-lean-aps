@@ -13,6 +13,37 @@ from .history import _json_ready
 PROJECT_DIR = Path(__file__).resolve().parents[1] / "data" / "projects"
 
 
+def safe_project_name(name: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name.strip()) or "EastFu_APS_Project"
+
+
+def project_document(name: str, payload: dict[str, Any], version: str = "export", parent_version: str | None = None) -> dict[str, Any]:
+    safe_name = safe_project_name(name)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    metadata = {
+        "project_id": safe_name,
+        "schedule_name": name,
+        "version": version,
+        "created_at": payload.get("metadata", {}).get("created_at", now),
+        "updated_at": now,
+        "parent_version": parent_version,
+    }
+    return {"metadata": metadata, "payload": _json_ready(payload)}
+
+
+def project_to_bytes(name: str, payload: dict[str, Any], version: str = "export") -> tuple[str, bytes]:
+    safe_name = safe_project_name(name)
+    document = project_document(name, payload, version=version)
+    return f"{safe_name}_{version}.json", json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8")
+
+
+def load_project_bytes(data: bytes) -> dict[str, Any]:
+    document = json.loads(data.decode("utf-8-sig"))
+    if "payload" not in document:
+        document = {"metadata": {}, "payload": document}
+    return document
+
+
 def list_projects(path: Path = PROJECT_DIR) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -28,20 +59,11 @@ def list_projects(path: Path = PROJECT_DIR) -> list[dict[str, Any]]:
 
 def save_project(name: str, payload: dict[str, Any], save_as: bool = False, path: Path = PROJECT_DIR) -> Path:
     path.mkdir(parents=True, exist_ok=True)
-    safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name.strip()) or "EastFu_APS_Project"
+    safe_name = safe_project_name(name)
     existing = sorted(path.glob(f"{safe_name}_v*.json"))
     version = len(existing) + 1 if save_as or not existing else len(existing)
     file_path = path / f"{safe_name}_v{version:03d}.json"
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    metadata = {
-        "project_id": safe_name,
-        "schedule_name": name,
-        "version": f"v{version:03d}",
-        "created_at": payload.get("metadata", {}).get("created_at", now),
-        "updated_at": now,
-        "parent_version": existing[-1].name if save_as and existing else None,
-    }
-    saved = {"metadata": metadata, "payload": _json_ready(payload)}
+    saved = project_document(name, payload, version=f"v{version:03d}", parent_version=existing[-1].name if save_as and existing else None)
     file_path.write_text(json.dumps(saved, ensure_ascii=False, indent=2), encoding="utf-8")
     return file_path
 
