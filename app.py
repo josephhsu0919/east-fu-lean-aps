@@ -32,7 +32,7 @@ MAIN_STRATEGIES = ["rush_edd", "edd", "fifo", "spt", "changeover"]
 HORIZON_HOURS = {"24 小時": 24, "48 小時": 48, "72 小時": 72, "一週": 168}
 
 
-st.set_page_config(page_title="東福精實生產排程系統", page_icon="EF", layout="wide")
+st.set_page_config(page_title="東福塑膠智慧精實排程系統V2", page_icon="EF", layout="wide")
 st.markdown(
     """
     <style>
@@ -487,8 +487,8 @@ def apply_v2_project_document(document: dict, label: str) -> None:
 
 
 init_state()
-st.title("East Fu APS Lite V2")
-st.caption("ERP Excel → Upload → Confirm → Schedule → Review → Save")
+st.title("東福塑膠智慧精實排程系統V2")
+st.caption("ERP 製令匯入 → 資料確認 → 智慧排程 → 甘特圖檢視 → 專案存檔")
 
 with st.container(border=True):
     st.subheader("V2 工作區")
