@@ -271,3 +271,33 @@ def test_v2_processing_spans_machine_non_working_blocks():
     row = result[result["工單編號"] == "A"].iloc[0]
     assert row["開始時間"] == START
     assert row["結束時間"] == pd.Timestamp("2026-09-21 16:00")
+
+
+def test_v2_machine_daily_availability_spans_overnight_gap():
+    wb = _workbook(
+        [
+            {"工單編號": "A", "完成日": "2026-09-25 23:59", "數量": 300},
+        ]
+    )
+    wb["機台可用時間"] = pd.DataFrame(
+        [
+            {"機台": "C2", "可用開始": "2026-09-20 08:00", "可用結束": "2026-09-20 20:00"},
+            {"機台": "C2", "可用開始": "2026-09-21 08:00", "可用結束": "2026-09-21 20:00"},
+        ]
+    )
+    result = schedule(wb, "v2_default", horizon_start="2026-09-20 18:00", horizon_end="2026-09-21 20:00", default_changeover_minutes=45)
+    row = result[result["工單編號"] == "A"].iloc[0]
+    assert row["開始時間"] == pd.Timestamp("2026-09-20 18:00")
+    assert row["結束時間"] == pd.Timestamp("2026-09-21 09:00")
+
+
+def test_v2_without_machine_availability_runs_continuously():
+    wb = _workbook(
+        [
+            {"工單編號": "A", "完成日": "2026-09-25 23:59", "數量": 300},
+        ]
+    )
+    result = schedule(wb, "v2_default", horizon_start="2026-09-20 18:00", horizon_end="2026-09-21 20:00", default_changeover_minutes=45)
+    row = result[result["工單編號"] == "A"].iloc[0]
+    assert row["開始時間"] == pd.Timestamp("2026-09-20 18:00")
+    assert row["結束時間"] == pd.Timestamp("2026-09-20 21:00")

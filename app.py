@@ -88,6 +88,9 @@ def init_state() -> None:
         "v2_planning_mode": "本批最晚結關日",
         "v2_custom_horizon_end": default_start + pd.Timedelta(days=14),
         "v2_execution_window_hours": 48,
+        "v2_work_time_mode": "每日固定工時",
+        "v2_daily_start_time": time(8, 0),
+        "v2_daily_end_time": time(20, 0),
         "v2_strategy_preset": "東福標準",
         "v2_priority_order": ["指定優先", "完成日", "減少換模"],
         "v2_lock_execution_window": False,
@@ -414,7 +417,15 @@ def run_v2_schedule(orders: pd.DataFrame, schedule_start: pd.Timestamp, horizon_
     if summary.issue_rows:
         st.error("仍有工單需要修正，請先處理問題列再排程。")
         return
-    workbook = build_scheduler_workbook(validated, master, schedule_start, horizon_end)
+    workbook = build_scheduler_workbook(
+        validated,
+        master,
+        schedule_start,
+        horizon_end,
+        work_time_mode=st.session_state.get("v2_work_time_mode", "每日固定工時"),
+        daily_start_time=st.session_state.get("v2_daily_start_time", time(8, 0)),
+        daily_end_time=st.session_state.get("v2_daily_end_time", time(20, 0)),
+    )
     selected_machines = st.session_state.get("v2_selected_machines", v2_machine_options())
     workbook["產品機台產速"] = workbook["產品機台產速"][workbook["產品機台產速"]["機台"].astype(str).isin(selected_machines)].copy()
     try:
@@ -516,7 +527,23 @@ with st.container(border=True):
             st.session_state.v2_custom_horizon_end = datetime_fields("規劃至", pd.Timestamp(st.session_state.v2_custom_horizon_end), "v2_custom_horizon_end")
         st.session_state.v2_execution_window_hours = settings_cols[1].selectbox("近期執行區", [24, 48, 72, 168], index=[24, 48, 72, 168].index(int(st.session_state.v2_execution_window_hours)), format_func=lambda h: f"{h} 小時" if h < 168 else "1 週", key="v2_execution_window_hours_widget")
         st.session_state.v2_strategy_preset = settings_cols[2].selectbox("排程策略", ["東福標準", "自訂"], index=0 if st.session_state.v2_strategy_preset == "東福標準" else 1, key="v2_strategy_preset_widget")
-        st.session_state.v2_lock_execution_window = settings_cols[3].checkbox("近期執行區鎖定（未啟用）", value=bool(st.session_state.v2_lock_execution_window), disabled=True, key="v2_lock_execution_window_widget")
+        work_time_options = ["每日固定工時", "24 小時連續排程"]
+        current_work_time_mode = st.session_state.get("v2_work_time_mode", "每日固定工時")
+        if current_work_time_mode not in work_time_options:
+            current_work_time_mode = "每日固定工時"
+        st.session_state.v2_work_time_mode = settings_cols[3].selectbox(
+            "工時模式",
+            work_time_options,
+            index=work_time_options.index(current_work_time_mode),
+            key="v2_work_time_mode_widget",
+        )
+        if st.session_state.v2_work_time_mode == "每日固定工時":
+            daily_cols = st.columns(2)
+            st.session_state.v2_daily_start_time = daily_cols[0].time_input("每日開始時間", value=st.session_state.get("v2_daily_start_time", time(8, 0)), key="v2_daily_start_time_widget")
+            st.session_state.v2_daily_end_time = daily_cols[1].time_input("每日結束時間", value=st.session_state.get("v2_daily_end_time", time(20, 0)), key="v2_daily_end_time_widget")
+            st.caption("工時模式：每台本次排程機台套用同一組每日開始/結束時間。")
+        else:
+            st.caption("工時模式：24 小時連續排程，不受每日開始/結束時間限制。")
         if st.session_state.v2_strategy_preset == "東福標準":
             st.session_state.v2_priority_order = ["指定優先", "完成日", "減少換模"]
             st.caption("目前優先順序：指定優先 → 完成日 → 減少換模")
@@ -566,6 +593,8 @@ with st.container(border=True):
             st.info(
                 f"本次規劃範圍：{pd.Timestamp(schedule_start):%Y/%m/%d %H:%M} ～ {pd.Timestamp(horizon_end):%Y/%m/%d %H:%M}；"
                 f"近期執行區：前 {int(st.session_state.v2_execution_window_hours)} 小時；"
+                f"工時模式：{st.session_state.v2_work_time_mode}"
+                f"{f'（{st.session_state.v2_daily_start_time:%H:%M}～{st.session_state.v2_daily_end_time:%H:%M}）' if st.session_state.v2_work_time_mode == '每日固定工時' else ''}；"
                 f"排程策略：{st.session_state.v2_strategy_preset}；"
                 f"優先順序：{priority_order_text(st.session_state.v2_priority_order)}"
             )
@@ -602,6 +631,8 @@ with st.container(border=True):
             "規劃開始": str(start),
             "規劃結束": str(end),
             "近期執行區": f"{st.session_state.v2_execution_window_hours} 小時",
+            "工時模式": st.session_state.v2_work_time_mode,
+            "每日工時": f"{st.session_state.v2_daily_start_time:%H:%M}～{st.session_state.v2_daily_end_time:%H:%M}" if st.session_state.v2_work_time_mode == "每日固定工時" else "24 小時",
             "排程策略": st.session_state.v2_strategy_preset,
             "優先順序": priority_order_text(st.session_state.v2_priority_order),
         }
@@ -626,6 +657,9 @@ with st.container(border=True):
             "planning_horizon_mode": st.session_state.v2_planning_mode,
             "planning_horizon_end": str(end),
             "execution_window_hours": st.session_state.v2_execution_window_hours,
+            "work_time_mode": st.session_state.v2_work_time_mode,
+            "daily_start_time": str(st.session_state.v2_daily_start_time),
+            "daily_end_time": str(st.session_state.v2_daily_end_time),
             "machine_status": frame_to_records(st.session_state.v2_master_data.get("機台目前狀態") if st.session_state.v2_master_data else None),
         }
         if save_cols[1].button("Save", use_container_width=True, key="v2_save_project"):
@@ -652,6 +686,9 @@ with st.container(border=True):
                 st.session_state.v2_priority_order = payload.get("priority_order", ["指定優先", "完成日", "減少換模"])
                 st.session_state.v2_planning_mode = payload.get("planning_horizon_mode", "本批最晚結關日")
                 st.session_state.v2_execution_window_hours = payload.get("execution_window_hours", 48)
+                st.session_state.v2_work_time_mode = payload.get("work_time_mode", "每日固定工時")
+                st.session_state.v2_daily_start_time = pd.to_datetime(payload.get("daily_start_time", "08:00"), errors="coerce").time()
+                st.session_state.v2_daily_end_time = pd.to_datetime(payload.get("daily_end_time", "20:00"), errors="coerce").time()
                 if st.session_state.v2_master_data is not None and payload.get("machine_status"):
                     st.session_state.v2_master_data["機台目前狀態"] = records_to_frame(payload.get("machine_status"))
                 st.success(f"已開啟：{selected_project}")

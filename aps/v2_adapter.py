@@ -132,6 +132,52 @@ def suggested_completion_date(filename: str, offset_days: int = 3) -> pd.Timesta
     return closing - pd.Timedelta(days=offset_days) if closing is not None else None
 
 
+def _parse_time_value(value: object) -> pd.Timestamp | None:
+    if value is None or pd.isna(value):
+        return None
+    if hasattr(value, "hour") and hasattr(value, "minute"):
+        return pd.Timestamp(year=2000, month=1, day=1, hour=int(value.hour), minute=int(value.minute), second=int(getattr(value, "second", 0)))
+    parsed = pd.to_datetime(str(value), errors="coerce")
+    if pd.isna(parsed):
+        return None
+    return pd.Timestamp(year=2000, month=1, day=1, hour=int(parsed.hour), minute=int(parsed.minute), second=int(parsed.second))
+
+
+def _build_machine_daily_availability(
+    machines: pd.DataFrame,
+    schedule_start: pd.Timestamp,
+    horizon_end: pd.Timestamp,
+    work_time_mode: str,
+    daily_start_time: object = None,
+    daily_end_time: object = None,
+) -> pd.DataFrame:
+    if work_time_mode == "24 小時連續排程" or machines.empty:
+        return pd.DataFrame(columns=["機台", "可用開始", "可用結束"])
+    if "機台" not in machines.columns:
+        return pd.DataFrame(columns=["機台", "可用開始", "可用結束"])
+
+    rows: list[dict[str, object]] = []
+    days = pd.date_range(pd.Timestamp(schedule_start).normalize(), pd.Timestamp(horizon_end).normalize(), freq="D")
+    global_start_time = _parse_time_value(daily_start_time)
+    global_end_time = _parse_time_value(daily_end_time)
+    for _, machine_row in machines.iterrows():
+        machine = str(machine_row.get("機台", "")).strip()
+        start_time = global_start_time or _parse_time_value(machine_row.get("每日開始時間"))
+        end_time = global_end_time or _parse_time_value(machine_row.get("每日結束時間"))
+        if not machine or start_time is None or end_time is None:
+            continue
+        for day in days:
+            available_start = pd.Timestamp(day) + pd.Timedelta(hours=start_time.hour, minutes=start_time.minute, seconds=start_time.second)
+            available_end = pd.Timestamp(day) + pd.Timedelta(hours=end_time.hour, minutes=end_time.minute, seconds=end_time.second)
+            if available_end <= available_start:
+                available_end += pd.Timedelta(days=1)
+            available_start = max(available_start, pd.Timestamp(schedule_start))
+            available_end = min(available_end, pd.Timestamp(horizon_end))
+            if available_start < available_end:
+                rows.append({"機台": machine, "可用開始": available_start, "可用結束": available_end})
+    return pd.DataFrame(rows, columns=["機台", "可用開始", "可用結束"])
+
+
 def parse_release_date(work_order_id: object) -> pd.Timestamp | None:
     text = re.sub(r"\D", "", str(work_order_id).strip())
     if len(text) < 8:
@@ -299,9 +345,18 @@ def assess_v2_schedule_readiness(
     return ScheduleReadiness(blocking=blocking, warnings=warnings)
 
 
-def build_scheduler_workbook(orders: pd.DataFrame, master_data: dict[str, pd.DataFrame], schedule_start: pd.Timestamp, horizon_end: pd.Timestamp) -> dict[str, pd.DataFrame]:
+def build_scheduler_workbook(
+    orders: pd.DataFrame,
+    master_data: dict[str, pd.DataFrame],
+    schedule_start: pd.Timestamp,
+    horizon_end: pd.Timestamp,
+    work_time_mode: str = "每日固定工時",
+    daily_start_time: object = "08:00",
+    daily_end_time: object = "20:00",
+) -> dict[str, pd.DataFrame]:
     product_master = master_data["產品主檔"].copy()
     rates = master_data["產品機台產速"].copy()
+    machines = master_data.get("機台資料", pd.DataFrame()).copy()
     setup = master_data.get("換模設定", pd.DataFrame()).copy()
     initial_wip = master_data.get("期初在製", pd.DataFrame()).copy()
     machine_available_from = master_data.get("機台可排起始時間", pd.DataFrame()).copy()
@@ -347,6 +402,7 @@ def build_scheduler_workbook(orders: pd.DataFrame, master_data: dict[str, pd.Dat
     return {
         "待排工單": scheduler_orders,
         "產品機台產速": rates,
+        "機台可用時間": _build_machine_daily_availability(machines, schedule_start, horizon_end, work_time_mode, daily_start_time, daily_end_time),
         "換模時間": setup,
         "期初在製": initial_wip,
         "機台可排起始時間": machine_available_from,

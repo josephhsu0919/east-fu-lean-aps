@@ -37,19 +37,36 @@ def _blocked_windows(unavailability: pd.DataFrame | None, machine: str) -> list[
 def _calendar_blocks(availability: pd.DataFrame, machine: str, horizon_start: pd.Timestamp, horizon_end: pd.Timestamp) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
     if availability.empty or "機台" not in availability.columns:
         return []
-    rows = availability[availability["機台"] == machine]
+    rows = availability[availability["機台"].astype(str) == str(machine)]
     if rows.empty:
         return [(horizon_start, horizon_end)]
-    row = rows.iloc[0]
-    available_start = max(pd.Timestamp(row["可用開始"]), horizon_start)
-    available_end = min(pd.Timestamp(row["可用結束"]), horizon_end)
-    blocks: list[tuple[pd.Timestamp, pd.Timestamp]] = []
-    if horizon_start < available_start:
-        blocks.append((horizon_start, available_start))
-    if available_end < horizon_end:
-        blocks.append((available_end, horizon_end))
-    if available_start >= available_end:
+    intervals: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for _, row in rows.iterrows():
+        available_start = pd.to_datetime(row.get("可用開始"), errors="coerce")
+        available_end = pd.to_datetime(row.get("可用結束"), errors="coerce")
+        if pd.isna(available_start) or pd.isna(available_end):
+            continue
+        available_start = max(pd.Timestamp(available_start), horizon_start)
+        available_end = min(pd.Timestamp(available_end), horizon_end)
+        if available_start < available_end:
+            intervals.append((available_start, available_end))
+    if not intervals:
         return [(horizon_start, horizon_end)]
+    intervals.sort()
+    merged: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    for start, end in intervals:
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    blocks: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+    cursor = horizon_start
+    for available_start, available_end in merged:
+        if cursor < available_start:
+            blocks.append((cursor, available_start))
+        cursor = max(cursor, available_end)
+    if cursor < horizon_end:
+        blocks.append((cursor, horizon_end))
     return blocks
 
 
