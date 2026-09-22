@@ -20,7 +20,7 @@ from aps.sample_data import write_demo_excel
 from aps.scheduler import MACHINES, schedule
 from aps.strategies import STRATEGIES
 from aps.validator import validate_workbook
-from aps.v2_adapter import build_scheduler_workbook, load_east_fu_erp_orders, load_v2_master_data, validate_v2_orders
+from aps.v2_adapter import assess_v2_schedule_readiness, build_scheduler_workbook, load_east_fu_erp_orders, load_v2_master_data, validate_v2_orders
 from ui.charts import comparison_bar
 from ui.gantt import make_gantt
 
@@ -373,6 +373,22 @@ def run_v2_schedule(orders: pd.DataFrame, schedule_start: pd.Timestamp, horizon_
     st.success("V2 排程完成")
 
 
+def render_v2_readiness(readiness) -> None:
+    if readiness.ready:
+        st.success("✓ 排程資料已準備完成，可以開始排程")
+    else:
+        lines = ["**目前尚無法開始排程，請先完成以下項目：**"]
+        for item in readiness.blocking:
+            lines.append(f"- **{item.message}**（{item.section}｜{item.action}）")
+        st.error("\n".join(lines))
+
+    if readiness.warnings:
+        lines = ["**提醒：以下項目不會阻擋排程，但可能影響結果：**"]
+        for item in readiness.warnings:
+            lines.append(f"- {item.message}（{item.section}｜{item.action}）")
+        st.warning("\n".join(lines))
+
+
 init_state()
 st.title("East Fu APS Lite V2")
 st.caption("ERP Excel → Upload → Confirm → Schedule → Review → Save")
@@ -449,9 +465,19 @@ with st.container(border=True):
             problem_rows = validated[validated["問題"] != ""]
             if not problem_rows.empty:
                 st.dataframe(problem_rows, use_container_width=True, height=220)
-            run_disabled = summary.issue_rows > 0 or not st.session_state.v2_selected_machines
-            if st.button("3. 使用 V2 規則開始排程", type="primary", disabled=run_disabled, use_container_width=True):
-                run_v2_schedule(validated, pd.Timestamp(schedule_start), pd.Timestamp(schedule_start) + pd.to_timedelta(int(horizon_hours), unit="h"))
+            horizon_end = pd.Timestamp(schedule_start) + pd.to_timedelta(int(horizon_hours), unit="h")
+            readiness = assess_v2_schedule_readiness(
+                master_data=st.session_state.v2_master_data,
+                orders=orders,
+                summary=summary,
+                validated_orders=validated,
+                selected_machines=st.session_state.v2_selected_machines,
+                schedule_start=schedule_start,
+                horizon_end=horizon_end,
+            )
+            render_v2_readiness(readiness)
+            if st.button("確認設定並開始排程", type="primary", disabled=not readiness.ready, use_container_width=True):
+                run_v2_schedule(validated, pd.Timestamp(schedule_start), horizon_end)
 
     if st.session_state.v2_schedule_df is not None and st.session_state.v2_kpis is not None and st.session_state.v2_workbook is not None:
         start, end, _ = get_schedule_window(st.session_state.v2_workbook["排程基本設定"])

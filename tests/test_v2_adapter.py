@@ -5,6 +5,7 @@ import pandas as pd
 from aps.metrics import calculate_kpis
 from aps.scheduler import schedule
 from aps.v2_adapter import (
+    assess_v2_schedule_readiness,
     build_scheduler_workbook,
     detect_customs_closing_date,
     load_east_fu_erp_orders,
@@ -55,6 +56,45 @@ def test_v2_validation_reports_blank_master_rates():
     assert summary.total_rows == 72
     assert summary.issue_rows == 72
     assert validated["問題"].str.contains("產品沒有有效機台產速").any()
+
+
+def test_v2_readiness_explains_missing_rates_blocker():
+    master = load_v2_master_data(MASTER_PATH)
+    orders, _ = load_east_fu_erp_orders(ERP_PATH, ERP_NAME)
+    orders = orders.head(5).copy()
+    orders["completion_date"] = pd.Timestamp("2026-09-06")
+    summary, validated = validate_v2_orders(orders, master)
+    readiness = assess_v2_schedule_readiness(
+        master_data=master,
+        orders=orders,
+        summary=summary,
+        validated_orders=validated,
+        selected_machines=["C2", "C4", "C5"],
+        schedule_start=pd.Timestamp("2026-09-05 08:00"),
+        horizon_end=pd.Timestamp("2026-09-07 08:00"),
+    )
+    assert not readiness.ready
+    messages = [item.message for item in readiness.blocking]
+    assert any("產品尚未建立有效機台/產速" in message for message in messages)
+
+
+def test_v2_readiness_allows_warnings_without_blocking():
+    master = _master_with_rates()
+    orders, _ = load_east_fu_erp_orders(ERP_PATH, ERP_NAME)
+    orders = orders.head(3).copy()
+    orders["completion_date"] = pd.Timestamp("2026-09-06")
+    summary, validated = validate_v2_orders(orders, master)
+    readiness = assess_v2_schedule_readiness(
+        master_data=master,
+        orders=orders,
+        summary=summary,
+        validated_orders=validated,
+        selected_machines=["C2", "C4"],
+        schedule_start=pd.Timestamp("2026-09-05 08:00"),
+        horizon_end=pd.Timestamp("2026-09-07 08:00"),
+    )
+    assert readiness.ready
+    assert readiness.warnings
 
 
 def test_v2_scheduler_respects_release_date_and_initial_wip():

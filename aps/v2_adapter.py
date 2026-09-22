@@ -32,6 +32,23 @@ class ImportSummary:
     issues: list[str]
 
 
+@dataclass(frozen=True)
+class ReadinessItem:
+    message: str
+    section: str
+    action: str
+
+
+@dataclass(frozen=True)
+class ScheduleReadiness:
+    blocking: list[ReadinessItem]
+    warnings: list[ReadinessItem]
+
+    @property
+    def ready(self) -> bool:
+        return not self.blocking
+
+
 def _read_workbook(source: str | Path | BinaryIO) -> dict[str, pd.DataFrame]:
     return pd.read_excel(source, sheet_name=None, header=None, engine="openpyxl")
 
@@ -205,6 +222,81 @@ def validate_v2_orders(orders: pd.DataFrame, master_data: dict[str, pd.DataFrame
         issues=sorted({part for text in frame["問題"] for part in str(text).split("；") if part}),
     )
     return summary, frame
+
+
+def assess_v2_schedule_readiness(
+    *,
+    master_data: dict[str, pd.DataFrame] | None,
+    orders: pd.DataFrame | None,
+    summary: ImportSummary | None,
+    validated_orders: pd.DataFrame | None,
+    selected_machines: list[str] | None,
+    schedule_start: object,
+    horizon_end: object,
+) -> ScheduleReadiness:
+    blocking: list[ReadinessItem] = []
+    warnings: list[ReadinessItem] = []
+
+    if not master_data:
+        blocking.append(ReadinessItem("尚未載入 V2 Master Data / 生產設定。", "1. 載入 V2 Master Data / 生產設定", "前往上傳 Master Data Excel"))
+    if orders is None or orders.empty:
+        blocking.append(ReadinessItem("尚未上傳 East Fu ERP 製令 Excel。", "2. 上傳 East Fu ERP 製令 Excel", "前往上傳 ERP 製令 Excel"))
+
+    start = pd.to_datetime(schedule_start, errors="coerce")
+    end = pd.to_datetime(horizon_end, errors="coerce")
+    if pd.isna(start):
+        blocking.append(ReadinessItem("尚未設定有效的排程開始時間。", "排程條件", "前往設定 V2 排程開始日期與時間"))
+    if pd.isna(end):
+        blocking.append(ReadinessItem("尚未設定有效的排程期間。", "排程條件", "前往設定 V2 排程期間"))
+    if pd.notna(start) and pd.notna(end) and end <= start:
+        blocking.append(ReadinessItem("排程結束時間必須晚於排程開始時間。", "排程條件", "前往調整 V2 排程期間"))
+
+    if not selected_machines:
+        blocking.append(ReadinessItem("尚未選擇本次排程機台。", "排程條件", "前往選擇本次排程機台"))
+
+    if validated_orders is not None and not validated_orders.empty:
+        problem_mask = validated_orders.get("問題", pd.Series("", index=validated_orders.index)).fillna("").astype(str) != ""
+        problem_rows = int(problem_mask.sum())
+        if problem_rows:
+            problem_text = validated_orders.loc[problem_mask, "問題"].fillna("").astype(str)
+            missing_rate_mask = problem_text.str.contains("產品沒有有效機台產速", regex=False)
+            missing_rate_products = int(validated_orders.loc[problem_mask & missing_rate_mask, "product_id"].dropna().astype(str).nunique())
+            if missing_rate_products:
+                blocking.append(
+                    ReadinessItem(
+                        f"{missing_rate_products} 個產品尚未建立有效機台/產速。",
+                        "產品機台產速",
+                        "前往「產品機台產速」分頁補齊產品、機台、產速_PCS_per_hr",
+                    )
+                )
+
+            missing_completion = int(problem_text.str.contains("缺少完成日", regex=False).sum())
+            if missing_completion:
+                blocking.append(ReadinessItem(f"{missing_completion} 筆工單尚未確認完成日。", "確認完成日 / 工單清單", "前往確認完成日"))
+
+            missing_completion_mask = problem_text.str.contains("缺少完成日", regex=False)
+            other_issue_rows = int((~missing_rate_mask & ~missing_completion_mask).sum())
+            if other_issue_rows > 0:
+                blocking.append(ReadinessItem(f"{other_issue_rows} 筆工單資料驗證失敗。", "ERP 工單驗證結果", "前往問題列查看並修正"))
+
+    elif summary is not None and summary.issue_rows:
+        blocking.append(ReadinessItem(f"{summary.issue_rows} 筆工單資料驗證失敗。", "ERP 工單驗證結果", "前往問題列查看並修正"))
+
+    if selected_machines and master_data:
+        rates = master_data.get("產品機台產速", pd.DataFrame()).copy()
+        if not rates.empty and "機台" in rates.columns:
+            rate_machines = set(rates["機台"].dropna().astype(str))
+            selected_without_rates = [machine for machine in selected_machines if str(machine) not in rate_machines]
+            if selected_without_rates:
+                warnings.append(
+                    ReadinessItem(
+                        f"{len(selected_without_rates)} 台已選機台目前沒有任何產速資料：{', '.join(selected_without_rates)}。",
+                        "產品機台產速",
+                        "可排程，但這些機台不會被分配工單；需要時請補產速",
+                    )
+                )
+
+    return ScheduleReadiness(blocking=blocking, warnings=warnings)
 
 
 def build_scheduler_workbook(orders: pd.DataFrame, master_data: dict[str, pd.DataFrame], schedule_start: pd.Timestamp, horizon_end: pd.Timestamp) -> dict[str, pd.DataFrame]:
