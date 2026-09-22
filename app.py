@@ -596,7 +596,26 @@ with st.container(border=True):
             "customer_order_no",
             "customer_name",
         ]
-        edited_orders = st.data_editor(orders[editable_cols], use_container_width=True, num_rows="dynamic", key="v2_orders_editor")
+        edited_orders = st.data_editor(
+            orders[editable_cols],
+            use_container_width=True,
+            num_rows="dynamic",
+            key="v2_orders_editor",
+            column_config={
+                "manual_priority": st.column_config.CheckboxColumn("指定優先", help="特殊急件或主管指定先做時勾選；未勾選則依排程策略自動排序。"),
+                "work_order_id": st.column_config.TextColumn("製令單號"),
+                "product_id": st.column_config.TextColumn("產品品號"),
+                "product_name": st.column_config.TextColumn("品名"),
+                "specification": st.column_config.TextColumn("規格"),
+                "quantity": st.column_config.NumberColumn("數量", format="%.0f"),
+                "unit": st.column_config.TextColumn("單位"),
+                "release_date": st.column_config.DateColumn("最早可排日"),
+                "completion_date": st.column_config.DateColumn("確認完成日"),
+                "customs_closing_date": st.column_config.DateColumn("結關日"),
+                "customer_order_no": st.column_config.TextColumn("客戶單號"),
+                "customer_name": st.column_config.TextColumn("客戶簡稱"),
+            },
+        )
         orders.update(edited_orders)
         if st.session_state.v2_master_data:
             summary, validated = validate_v2_orders(orders, st.session_state.v2_master_data)
