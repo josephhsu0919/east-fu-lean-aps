@@ -6,13 +6,24 @@ import plotly.express as px
 from aps.scheduler import MACHINES
 
 
+def _tick_dtick(horizon_start: pd.Timestamp, horizon_end: pd.Timestamp) -> int:
+    hours = max((pd.Timestamp(horizon_end) - pd.Timestamp(horizon_start)).total_seconds() / 3600, 1)
+    if hours <= 24:
+        return 3 * 60 * 60 * 1000
+    if hours <= 72:
+        return 6 * 60 * 60 * 1000
+    if hours <= 168:
+        return 12 * 60 * 60 * 1000
+    return 24 * 60 * 60 * 1000
+
+
 def make_gantt(schedule_df: pd.DataFrame, horizon_start: pd.Timestamp, horizon_end: pd.Timestamp):
     horizon_start = pd.Timestamp(horizon_start)
     horizon_end = pd.Timestamp(horizon_end)
     frame = schedule_df[schedule_df["狀態"] == "scheduled"].copy()
     if frame.empty:
         fig = px.timeline(pd.DataFrame(columns=["開始時間", "結束時間", "指派機台"]), x_start="開始時間", x_end="結束時間", y="指派機台")
-        fig.update_xaxes(range=[horizon_start, horizon_end])
+        fig.update_xaxes(range=[horizon_start, horizon_end], tickformat="%m/%d %H:%M", dtick=_tick_dtick(horizon_start, horizon_end))
         fig.update_layout(font=dict(size=15))
         return fig
     frame["工單標籤"] = frame["工單編號"].astype(str)
@@ -53,7 +64,15 @@ def make_gantt(schedule_df: pd.DataFrame, horizon_start: pd.Timestamp, horizon_e
     )
     axis_end = max(horizon_end, frame["結束時間"].max())
     fig.update_yaxes(autorange="reversed", title="機台", tickfont=dict(size=15), title_font=dict(size=16))
-    fig.update_xaxes(title="日期時間", range=[horizon_start, axis_end], tickfont=dict(size=15), title_font=dict(size=16))
+    fig.update_xaxes(
+        title="日期時間",
+        range=[horizon_start, axis_end],
+        tickformat="%m/%d %H:%M",
+        dtick=_tick_dtick(horizon_start, axis_end),
+        tickangle=0,
+        tickfont=dict(size=15),
+        title_font=dict(size=16),
+    )
     fig.update_traces(textposition="inside", insidetextanchor="middle", textfont_size=15)
     for hour in pd.date_range(horizon_start.ceil("h"), axis_end.floor("h"), freq="h"):
         if hour not in {horizon_start, horizon_end}:
